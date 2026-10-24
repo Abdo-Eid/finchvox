@@ -33,7 +33,6 @@ from finchvox.collector.config import (
     get_default_data_dir,
 )
 from finchvox import telemetry
-from finchvox.scheduler import start_scheduler
 
 
 class UnifiedServer:
@@ -50,7 +49,7 @@ class UnifiedServer:
         self,
         port: int = 3000,
         grpc_port: int = GRPC_PORT,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         data_dir: Path = None,
     ):
         """
@@ -59,7 +58,7 @@ class UnifiedServer:
         Args:
             port: HTTP server port (default: 3000)
             grpc_port: gRPC server port (default: 4317)
-            host: Host to bind to (default: "0.0.0.0")
+            host: Host to bind to (default: "127.0.0.1")
             data_dir: Base data directory (default: ~/.finchvox)
         """
         self.port = port
@@ -117,8 +116,17 @@ class UnifiedServer:
         log_servicer = LogCollectorServicer(self.log_writer)
         add_LogsServiceServicer_to_server(log_servicer, self.grpc_server)
 
-        # Bind to port (insecure for PoC - no TLS)
-        self.grpc_server.add_insecure_port(f"[::]:{self.grpc_port}")
+        # Bind gRPC to the same interface as the HTTP UI. Keeping the default
+        # on loopback matters because traces, transcripts, tool payloads, and
+        # audio can contain sensitive data. Use --host 0.0.0.0 explicitly when
+        # Finchvox must be reachable from another container or machine.
+        grpc_host = self.host
+        if ":" in grpc_host and not grpc_host.startswith("["):
+            grpc_host = f"[{grpc_host}]"
+        bind_address = f"{grpc_host}:{self.grpc_port}"
+        bound_port = self.grpc_server.add_insecure_port(bind_address)
+        if bound_port == 0:
+            raise RuntimeError(f"Failed to bind OTLP gRPC server to {bind_address}")
 
         # Start serving
         self.grpc_server.start()
@@ -143,6 +151,8 @@ class UnifiedServer:
         telemetry.send_event("server_start", dedupe=True)
 
         await self.start_grpc()
+
+        from finchvox.scheduler import start_scheduler
 
         start_scheduler(self.data_dir)
 
@@ -180,6 +190,8 @@ class UnifiedServer:
         Blocking entry point for running the unified server.
 
         Sets up signal handlers and runs the event loop until shutdown.
+        Uses ``loop.add_signal_handler`` on Unix and falls back to
+        ``signal.signal`` on Windows where the former is unavailable.
         """
 
         async def run_with_signals():
@@ -190,13 +202,35 @@ class UnifiedServer:
                     logger.info(f"Received signal {signum}")
                     # Remove signal handlers to prevent duplicate calls
                     for sig in (signal.SIGINT, signal.SIGTERM):
-                        loop.remove_signal_handler(sig)
+                        try:
+                            loop.remove_signal_handler(sig)
+                        except (NotImplementedError, RuntimeError):
+                            pass
                     # Create shutdown task
                     asyncio.create_task(self.stop())
 
-            # Register signal handlers
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, lambda s=sig: handle_shutdown(s))
+            # Register signal handlers (Unix fast path).
+            try:
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    loop.add_signal_handler(sig, lambda s=sig: handle_shutdown(s))
+            except NotImplementedError:
+                # Windows: ProactorEventLoop has no add_signal_handler.
+                # Fall back to stdlib handlers scheduled thread-safely.
+                logger.debug(
+                    "loop.add_signal_handler unavailable; using signal.signal fallback"
+                )
+
+                def _stdlib_handler(signum, frame):
+                    try:
+                        loop.call_soon_threadsafe(handle_shutdown, signum)
+                    except RuntimeError:
+                        pass
+
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    try:
+                        signal.signal(sig, _stdlib_handler)
+                    except (ValueError, OSError, RuntimeError) as exc:
+                        logger.debug(f"Could not install handler for {sig}: {exc}")
 
             try:
                 await self.start()

@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytest.importorskip("apscheduler")
+
 from finchvox.scheduler import (
     compress_pending_sessions,
     find_sessions_to_compress,

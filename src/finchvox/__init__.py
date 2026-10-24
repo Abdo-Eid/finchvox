@@ -243,7 +243,35 @@ def _setup_loguru_bridge() -> None:
     loguru_logger.configure(patcher=log_patcher)
 
 
-from finchvox.processor import FinchvoxProcessor  # noqa: E402
+def _setup_livekit_log_export(
+    service_name: str, endpoint: str, insecure: bool
+):
+    """Export stdlib/LiveKit logs to the same local OTLP collector.
+
+    OpenTelemetry's LoggingHandler reads the *current* span context at emit
+    time, so logs produced while LiveKit spans are active arrive at Finchvox
+    with matching trace/span IDs and can be synchronized with the replay UI.
+    """
+    from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if getattr(handler, "_finchvox_livekit_handler", False):
+            return getattr(handler, "_finchvox_logger_provider", None)
+
+    resource = Resource.create({SERVICE_NAME: service_name})
+    logger_provider = LoggerProvider(resource=resource)
+    exporter = OTLPLogExporter(endpoint=endpoint, insecure=insecure)
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+
+    handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+    handler._finchvox_livekit_handler = True
+    handler._finchvox_logger_provider = logger_provider
+    root_logger.addHandler(handler)
+    return logger_provider
 
 
 def init_livekit(
@@ -251,7 +279,21 @@ def init_livekit(
     endpoint: str = "http://localhost:4317",
     insecure: bool = True,
     metadata: dict[str, str] | None = None,
+    *,
+    capture_logs: bool = True,
+    allow_pii: bool = True,
 ) -> TracerProvider:
+    """Initialize local-first LiveKit Agents observability.
+
+    Traces are sent directly to Finchvox over OTLP/gRPC. When ``capture_logs``
+    is enabled, stdlib logs are exported to the same collector and keep their
+    active LiveKit trace/span context.
+
+    ``allow_pii=True`` is intentionally the default for the local replay UX so
+    transcripts, tool arguments/results and response text can be displayed.
+    Set it to ``False`` when you prefer metadata-only traces. LiveKit Agents
+    versions predating this option are supported with a compatibility fallback.
+    """
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import Resource, SERVICE_NAME
     from opentelemetry.sdk.trace import TracerProvider
@@ -264,14 +306,49 @@ def init_livekit(
     exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
     tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
 
-    set_tracer_provider(tracer_provider, metadata=metadata)
+    try:
+        set_tracer_provider(
+            tracer_provider, metadata=metadata, allow_pii=allow_pii
+        )
+    except TypeError:
+        # Compatibility with older LiveKit Agents releases.
+        set_tracer_provider(tracer_provider, metadata=metadata)
+
+    logger_provider = None
+    if capture_logs:
+        logger_provider = _setup_livekit_log_export(
+            service_name=service_name, endpoint=endpoint, insecure=insecure
+        )
+        # Keep a reference so callers can flush/shutdown both signal providers.
+        tracer_provider._finchvox_logger_provider = logger_provider
 
     logger.info(
         f"Finchvox v{version('finchvox')} LiveKit initialized with "
-        f"service_name='{service_name}', endpoint='{endpoint}'"
+        f"service_name='{service_name}', endpoint='{endpoint}', "
+        f"capture_logs={capture_logs}, allow_pii={allow_pii}"
     )
 
     return tracer_provider
 
 
-__all__ = ["init", "init_livekit", "FinchvoxProcessor"]
+def flush_livekit(tracer_provider: TracerProvider, timeout_millis: int = 30000) -> bool:
+    """Flush LiveKit traces and Finchvox OTLP logs before process shutdown."""
+    trace_ok = tracer_provider.force_flush(timeout_millis=timeout_millis)
+    log_provider = getattr(tracer_provider, "_finchvox_logger_provider", None)
+    log_ok = True
+    if log_provider is not None:
+        log_ok = log_provider.force_flush(timeout_millis=timeout_millis)
+    return bool(trace_ok and log_ok)
+
+
+def __getattr__(name: str):
+    # Keep the Pipecat processor lazy so LiveKit-only users do not import the
+    # Pipecat runtime merely by importing ``finchvox``.
+    if name == "FinchvoxProcessor":
+        from finchvox.processor import FinchvoxProcessor
+
+        return FinchvoxProcessor
+    raise AttributeError(name)
+
+
+__all__ = ["init", "init_livekit", "flush_livekit", "FinchvoxProcessor"]

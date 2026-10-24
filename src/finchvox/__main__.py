@@ -37,7 +37,7 @@ Examples:
         help=f"gRPC server port (default: {GRPC_PORT})",
     )
     parser.add_argument(
-        "--host", type=str, default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)"
+        "--host", type=str, default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)"
     )
     parser.add_argument(
         "--data-dir",

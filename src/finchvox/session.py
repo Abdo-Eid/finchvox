@@ -38,6 +38,8 @@ class Session:
         self._min_start_nano: Optional[int] = None
         self._max_end_nano: Optional[int] = None
         self._service_name: Optional[str] = None
+        self._platform: Optional[str] = None
+        self._error_count: int = 0
         self._load_metadata()
         self._load_log_count()
 
@@ -77,6 +79,7 @@ class Session:
         return PipecatAdapter().get_turn_span_names()
 
     def _load_metadata(self):
+        self._error_count = 0
         span_count = 0
         turn_count = 0
         min_start = None
@@ -98,9 +101,13 @@ class Session:
 
             platform = self._detect_platform(spans)
             turn_span_names = self._get_turn_span_names(platform)
+            adapter = LiveKitAdapter() if platform == "livekit" else PipecatAdapter()
             for span in spans:
                 if span.get("name") in turn_span_names:
                     turn_count += 1
+                if adapter.normalize_span(span).get("_normalized", {}).get("is_error"):
+                    self._error_count += 1
+            self._platform = platform
         except Exception as e:
             print(f"Error loading session {self.trace_file}: {e}")
 
@@ -162,17 +169,22 @@ class Session:
         return self._service_name
 
     @property
+    def platform(self) -> str:
+        return self._platform or "pipecat"
+
+    @property
+    def error_count(self) -> int:
+        return self._error_count
+
+    @property
     def trace(self) -> Trace:
         return Trace(turn_count=self.turn_count)
 
     def get_audio_size_bytes(self) -> Optional[int]:
-        opus_file = self.session_dir / "audio.opus"
-        if opus_file.exists():
-            return opus_file.stat().st_size
-
-        wav_file = self.session_dir / "audio.wav"
-        if wav_file.exists():
-            return wav_file.stat().st_size
+        for extension in (".wav", ".mp3", ".ogg", ".flac", ".opus", ".webm", ".m4a"):
+            audio_file = self.session_dir / f"audio{extension}"
+            if audio_file.exists():
+                return audio_file.stat().st_size
 
         sessions_base_dir = self.session_dir.parent
         chunks = find_chunks(sessions_base_dir, self.session_id)
@@ -191,6 +203,8 @@ class Session:
         return {
             "session_id": self.session_id,
             "service_name": self.service_name,
+            "platform": self.platform,
+            "error_count": self.error_count,
             "start_time": self.start_time,
             "end_time": self.end_time,
             "duration_ms": self.duration_ms,

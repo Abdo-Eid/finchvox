@@ -43,6 +43,7 @@ htmlcov/
 
 # Project-specific
 traces/
+.finchvox-data/
 PLANNING.md
 TODO.md
 

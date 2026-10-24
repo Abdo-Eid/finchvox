@@ -33,6 +33,9 @@ class TestDetectPlatform:
         ]
         assert detect_platform(spans) == "livekit"
 
+    def test_detects_livekit_from_known_span_name_without_scope(self):
+        assert detect_platform([{"name": "agent_turn", "attributes": []}]) == "livekit"
+
     def test_returns_pipecat_for_empty_spans(self):
         assert detect_platform([]) == "pipecat"
 
@@ -304,3 +307,132 @@ class TestLiveKitAdapter:
         }
         normalized2 = adapter.normalize_span(span2)
         assert normalized2["_normalized"]["hidden"] is False
+
+
+class TestLiveKitCurrentTelemetry:
+    @pytest.fixture
+    def adapter(self):
+        return LiveKitAdapter()
+
+    def test_pii_transcript_and_response_attributes(self, adapter):
+        user = {
+            "name": "user_turn",
+            "attributes": [
+                {"key": "lk.pii.user_transcript", "value": {"string_value": "hello from 1.8"}},
+                {"key": "lk.transcription_delay", "value": {"double_value": 0.12}},
+            ],
+        }
+        assistant = {
+            "name": "llm_request",
+            "attributes": [
+                {"key": "lk.pii.response.text", "value": {"string_value": "hi there"}},
+                {"key": "lk.response.ttft", "value": {"double_value": 0.31}},
+            ],
+        }
+
+        assert adapter.get_transcript(user) == "hello from 1.8"
+        assert adapter.get_output_text(assistant) == "hi there"
+        assert adapter.get_ttfb(user) == 0.12
+        assert adapter.get_ttfb(assistant) == 0.31
+
+    def test_genai_time_to_first_chunk_fallback(self, adapter):
+        span = {
+            "name": "realtime_inference",
+            "attributes": [
+                {"key": "gen_ai.response.time_to_first_chunk", "value": {"double_value": 0.222}}
+            ],
+        }
+        assert adapter.get_ttfb(span) == 0.222
+
+    def test_tool_and_handoff_normalization(self, adapter):
+        tool = adapter.normalize_span(
+            {
+                "name": "function_tool",
+                "attributes": [
+                    {"key": "gen_ai.tool.name", "value": {"string_value": "book_visit"}},
+                    {"key": "gen_ai.tool.call.id", "value": {"string_value": "call-1"}},
+                    {"key": "lk.pii.function_tool.arguments", "value": {"string_value": '{"day":"tue"}'}},
+                    {"key": "lk.function_tool.is_error", "value": {"bool_value": False}},
+                ],
+            }
+        )
+        handoff = adapter.normalize_span(
+            {
+                "name": "update_agent",
+                "attributes": [
+                    {"key": "lk.previous_agent_label", "value": {"string_value": "triage"}},
+                    {"key": "lk.agent_label", "value": {"string_value": "scheduler"}},
+                ],
+            }
+        )
+
+        assert tool["_normalized"]["event_kind"] == "tool"
+        assert tool["_normalized"]["tool_name"] == "book_visit"
+        assert tool["_normalized"]["is_error"] is False
+        assert handoff["_normalized"]["event_kind"] == "handoff"
+        assert handoff["_normalized"]["previous_agent_label"] == "triage"
+        assert handoff["_normalized"]["agent_label"] == "scheduler"
+
+    def test_tool_error_is_visible_even_with_falsey_attributes_supported(self, adapter):
+        span = adapter.normalize_span(
+            {
+                "name": "function_tool",
+                "attributes": [
+                    {"key": "lk.function_tool.is_error", "value": {"bool_value": True}},
+                    {"key": "lk.retry_count", "value": {"int_value": 0}},
+                ],
+            }
+        )
+        assert span["_normalized"]["is_error"] is True
+        assert adapter._get_attribute(span, "lk.retry_count") == 0
+
+    def test_current_livekit_context_ids_support_bare_attribute_names(self, adapter):
+        span = adapter.normalize_span(
+            {
+                "name": "agent_turn",
+                "attributes": [
+                    {"key": "room_id", "value": {"string_value": "RM_local_123"}},
+                    {"key": "job_id", "value": {"string_value": "AJ_local_123"}},
+                ],
+            }
+        )
+
+        assert span["_normalized"]["room_sid"] == "RM_local_123"
+        assert span["_normalized"]["job_id"] == "AJ_local_123"
+
+
+def test_livekit_18_normalization_keeps_session_turn_and_genai_fields():
+    adapter = LiveKitAdapter()
+    span = adapter.normalize_span(
+        {
+            "name": "agent_turn",
+            "attributes": [
+                {"key": "lk.generation_id", "value": {"string_value": "gen-2"}},
+                {"key": "lk.parent_generation_id", "value": {"string_value": "gen-1"}},
+                {"key": "lk.generation_count", "value": {"int_value": 2}},
+                {"key": "lk.interruption.source", "value": {"string_value": "user_speech"}},
+                {"key": "lk.playout.position", "value": {"double_value": 1.25}},
+                {"key": "lk.pii.room_name", "value": {"string_value": "room-local"}},
+                {"key": "lk.provider_request_ids", "value": {"array_value": {"values": [
+                    {"string_value": "req-a"}, {"string_value": "req-b"}
+                ]}}},
+                {"key": "gen_ai.provider.name", "value": {"string_value": "openai"}},
+                {"key": "gen_ai.response.model", "value": {"string_value": "gpt-x"}},
+                {"key": "gen_ai.usage.input_tokens", "value": {"int_value": 123}},
+                {"key": "gen_ai.usage.output_tokens", "value": {"int_value": 45}},
+                {"key": "lk.transcript_confidence", "value": {"double_value": 0.98}},
+            ],
+        }
+    )
+    normalized = span["_normalized"]
+    assert normalized["generation_count"] == 2
+    assert normalized["parent_generation_id"] == "gen-1"
+    assert normalized["interruption_source"] == "user_speech"
+    assert normalized["playout_position_seconds"] == 1.25
+    assert normalized["room_name"] == "room-local"
+    assert normalized["provider_request_ids"] == ["req-a", "req-b"]
+    assert normalized["provider"] == "openai"
+    assert normalized["response_model"] == "gpt-x"
+    assert normalized["input_tokens"] == 123
+    assert normalized["output_tokens"] == 45
+    assert normalized["transcript_confidence"] == 0.98

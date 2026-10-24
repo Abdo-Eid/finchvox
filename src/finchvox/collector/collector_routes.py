@@ -2,7 +2,7 @@
 Collector routes for audio chunk uploads, logs, and exceptions.
 
 This module provides route registration functions for the collector endpoints,
-which handle data ingestion from Pipecat applications.
+which handle data ingestion from LiveKit Agents and Pipecat applications.
 """
 
 import json
@@ -14,7 +14,109 @@ from fastapi.responses import JSONResponse, Response
 from loguru import logger
 
 from .audio_handler import AudioHandler
-from .config import ALLOWED_AUDIO_FORMATS, MAX_AUDIO_FILE_SIZE, get_session_dir
+from .config import (
+    ALLOWED_AUDIO_FORMATS,
+    ALLOWED_FINAL_AUDIO_FORMATS,
+    MAX_AUDIO_FILE_SIZE,
+    MAX_FINAL_AUDIO_FILE_SIZE,
+    get_session_dir,
+)
+
+
+def _otel_attributes(span: dict) -> dict[str, object]:
+    """Decode the small subset of OTLP JSON attributes needed for correlation."""
+    decoded: dict[str, object] = {}
+    for attr in span.get("attributes", []) or []:
+        key = attr.get("key")
+        value = attr.get("value") or {}
+        if not key:
+            continue
+        for value_key in (
+            "string_value",
+            "int_value",
+            "double_value",
+            "bool_value",
+        ):
+            if value_key in value:
+                decoded[key] = value[value_key]
+                break
+    return decoded
+
+
+def _livekit_report_identity(report: dict) -> tuple[str | None, str | None, str | None]:
+    """Return (job_id, room_id, room_name) across Python/JS report spellings."""
+    job_id = report.get("job_id") or report.get("jobId")
+    room_id = report.get("room_id") or report.get("roomId")
+    room_name = report.get("room") or report.get("room_name") or report.get("roomName")
+    return (
+        str(job_id) if job_id else None,
+        str(room_id) if room_id else None,
+        str(room_name) if room_name else None,
+    )
+
+
+def _resolve_livekit_trace_id(data_dir: Path, report: dict) -> str | None:
+    """Find the local OTel trace that belongs to a LiveKit SessionReport.
+
+    LiveKit's report does not currently include the OTel trace ID, but its job,
+    room SID, and room name are also emitted on LiveKit spans. Matching these
+    values lets a normal ``on_session_end`` callback attach the report/audio
+    without application code manually carrying a trace ID through the session.
+    """
+    job_id, room_id, room_name = _livekit_report_identity(report)
+    if not any((job_id, room_id, room_name)):
+        return None
+
+    sessions_dir = data_dir / "sessions"
+    if not sessions_dir.exists():
+        return None
+
+    best: tuple[int, float, str] | None = None
+    for session_dir in sessions_dir.iterdir():
+        if not session_dir.is_dir() or not re.match(r"^[a-f0-9]{32}$", session_dir.name):
+            continue
+        trace_file = session_dir / f"trace_{session_dir.name}.jsonl"
+        if not trace_file.exists():
+            continue
+        score = 0
+        try:
+            with trace_file.open() as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        span = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    attrs = _otel_attributes(span)
+                    span_job_id = attrs.get("job_id") or attrs.get("lk.job_id")
+                    span_room_id = attrs.get("room_id") or attrs.get("lk.room_sid") or attrs.get("lk.room_id")
+                    if job_id and str(span_job_id or "") == job_id:
+                        score = max(score, 100)
+                    if room_id and str(span_room_id or "") == room_id:
+                        score = max(score, 70)
+                    span_room_name = attrs.get("lk.pii.room_name") or attrs.get("lk.room_name")
+                    if room_name and str(span_room_name or "") == room_name:
+                        score = max(score, 40)
+                    if score >= 100:
+                        break
+        except OSError:
+            continue
+
+        if score:
+            candidate = (score, trace_file.stat().st_mtime, session_dir.name)
+            if best is None or candidate > best:
+                best = candidate
+
+    return best[2] if best else None
+
+
+def _store_livekit_report(data_dir: Path, trace_id: str, report: dict) -> Path:
+    session_dir = get_session_dir(data_dir, trace_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    destination = session_dir / "livekit_report.json"
+    destination.write_text(json.dumps(report, indent=2))
+    return destination
 
 
 def register_collector_routes(
@@ -93,7 +195,7 @@ def register_collector_routes(
             # Validate file size
             if len(audio_data) > MAX_AUDIO_FILE_SIZE:
                 raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                     detail=f"Audio file too large: {len(audio_data)} bytes (max {MAX_AUDIO_FILE_SIZE})",
                 )
 
@@ -154,6 +256,115 @@ def register_collector_routes(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Internal server error processing audio upload",
             )
+
+    @app.post(f"{prefix}/livekit/report")
+    async def receive_livekit_report_auto(request: Request):
+        """Resolve a SessionReport to its local trace using LiveKit identifiers."""
+        try:
+            report = await request.json()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON"
+            )
+        if not isinstance(report, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="SessionReport must be a JSON object",
+            )
+
+        trace_id = _resolve_livekit_trace_id(audio_handler.data_dir, report)
+        if not trace_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "No matching LiveKit trace found. Flush traces first, or upload "
+                    "to /collector/livekit/{trace_id}/report with an explicit trace ID."
+                ),
+            )
+
+        _store_livekit_report(audio_handler.data_dir, trace_id, report)
+        logger.info(
+            f"Resolved LiveKit SessionReport to trace {trace_id[:8]}..."
+        )
+        return JSONResponse(
+            status_code=status.HTTP_201_CREATED,
+            content={"status": "success", "trace_id": trace_id},
+        )
+
+    @app.post(f"{prefix}/livekit/{{trace_id}}/report")
+    async def receive_livekit_report(trace_id: str, request: Request):
+        """Store a local LiveKit SessionReport beside the matching OTel trace."""
+        if not re.match(r"^[a-f0-9]{32}$", trace_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid trace_id format"
+            )
+        try:
+            report = await request.json()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON"
+            )
+
+        _store_livekit_report(audio_handler.data_dir, trace_id, report)
+        logger.info(f"Received LiveKit SessionReport for {trace_id[:8]}...")
+        return JSONResponse(
+            status_code=status.HTTP_201_CREATED,
+            content={"status": "success", "trace_id": trace_id},
+        )
+
+    @app.post(f"{prefix}/livekit/{{trace_id}}/audio")
+    async def receive_livekit_audio(
+        trace_id: str, audio: UploadFile = File(..., description="Finalized session recording")
+    ):
+        """Store a finalized LiveKit recording for synchronized local replay."""
+        if not re.match(r"^[a-f0-9]{32}$", trace_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid trace_id format"
+            )
+        extension = Path(audio.filename or "audio.wav").suffix.lower() or ".wav"
+        if extension not in ALLOWED_FINAL_AUDIO_FORMATS:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=(
+                    f"Unsupported finalized audio format: {extension} "
+                    f"(allowed: {ALLOWED_FINAL_AUDIO_FORMATS})"
+                ),
+            )
+
+        session_dir = get_session_dir(audio_handler.data_dir, trace_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        destination = session_dir / f"audio{extension}"
+        total = 0
+        try:
+            with destination.open("wb") as output:
+                while True:
+                    chunk = await audio.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_FINAL_AUDIO_FILE_SIZE:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail=(
+                                "Finalized audio file exceeds "
+                                f"{MAX_FINAL_AUDIO_FILE_SIZE} byte limit"
+                            ),
+                        )
+                    output.write(chunk)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+
+        logger.info(f"Received LiveKit audio for {trace_id[:8]}... ({total} bytes)")
+        return JSONResponse(
+            status_code=status.HTTP_201_CREATED,
+            content={
+                "status": "success",
+                "trace_id": trace_id,
+                "size_bytes": total,
+                "format": extension[1:],
+            },
+        )
 
     @app.get(f"{prefix}/health")
     async def health_check():

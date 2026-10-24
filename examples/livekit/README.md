@@ -1,74 +1,76 @@
-# LiveKit Agent Example with Finchvox
+# LiveKit Agent example with local Finchvox observability
 
-A minimal voice agent demonstrating Finchvox instrumentation with LiveKit agents.
+This example shows the minimal integration for exporting **LiveKit Agents** telemetry to a Finchvox server running on your machine.
 
-## Prerequisites
+For the complete explanation—including privacy, LiveKit Cloud vs self-hosted behavior, audio recording, Docker networking, and troubleshooting—see [`../../docs/LIVEKIT_LOCAL_SETUP.md`](../../docs/LIVEKIT_LOCAL_SETUP.md).
 
-- Python 3.10+
-- A running LiveKit server (local or cloud)
-- API keys for OpenAI, Deepgram, and Cartesia
+## 1. Create the example environment
 
-## Setup
-
-1. Install dependencies:
+From the repository root:
 
 ```bash
-cd /path/to/finchvox
-uv pip install -e ".[livekit]"
+cd examples/livekit
+uv sync
 ```
 
-2. Copy the environment template and fill in your API keys:
+The example's `pyproject.toml` installs the repository root as an editable `finchvox[livekit]` dependency, so edits to Finchvox are picked up immediately.
+
+## 2. Configure LiveKit and providers
+
+Copy the template:
 
 ```bash
 cp .env.example .env
 ```
 
-3. Start the Finchvox server (in a separate terminal):
+Fill in your LiveKit credentials and the provider API keys required by the STT/LLM/TTS models you choose. Do not commit the resulting `.env` file.
+
+## 3. Start Finchvox
+
+In terminal 1, from `examples/livekit`:
 
 ```bash
-uv run finchvox start
+uv run finchvox start --data-dir ../../.finchvox-data
 ```
 
-4. Start the LiveKit agent:
+Open `http://localhost:3000`.
+
+The collector listens for OTLP/gRPC traces and logs on `localhost:4317`.
+
+## 4. Start the agent
+
+In terminal 2, also from `examples/livekit`:
 
 ```bash
-python agent.py dev
+uv run python agent.py dev
 ```
 
-## Testing
+Join the room with your normal LiveKit client/playground and talk to the agent.
 
-1. Open the LiveKit playground or connect via a LiveKit client
-2. Speak to the agent
-3. View traces in the Finchvox UI at http://localhost:3000
+## What the example does
 
-## What Gets Traced
+`agent.py`:
 
-With `finchvox.init_livekit()`, you'll see spans for:
-- `agent_session` - The overall agent session
-- `user_speaking` / `agent_speaking` - Speech turn events
-- `llm_node` - LLM inference calls
-- `tts_node` - Text-to-speech synthesis
-- `stt` - Speech-to-text transcription
+1. calls `finchvox.init_livekit()` before the session starts,
+2. exports OpenTelemetry traces to `localhost:4317`,
+3. exports Python logs to the same local collector,
+4. flushes batched telemetry during shutdown, and
+5. uploads the final `SessionReport` (plus a local recording when the report exposes one) to Finchvox.
 
-## Configuration
+The session then appears in the Finchvox UI with synchronized **Transcript**, **Trace**, **Logs**, and **Metrics** views.
 
-The `init_livekit()` function accepts:
+## PII/content
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `service_name` | `"livekit-agent"` | Service name in traces |
-| `endpoint` | `"http://localhost:4317"` | OTLP gRPC endpoint |
-| `insecure` | `True` | Use insecure connection |
-| `metadata` | `None` | Additional span attributes |
+The example uses `allow_pii=True` so a local replay can display transcript, model, and tool content. Set it to `False` if you only want structural and latency telemetry.
 
-Example with custom metadata:
+Treat `../../.finchvox-data` as sensitive when PII is enabled because it may contain transcript text, tool payloads, logs, and audio.
 
-```python
-tracer_provider = finchvox.init_livekit(
-    service_name="my-agent",
-    metadata={
-        "agent.version": "1.0.0",
-        "environment": "development",
-    },
-)
-```
+## Audio and LiveKit recording
+
+OTel does not contain replayable room audio. `upload_session_artifacts()` automatically attaches `report.audio_recording_path` when LiveKit produced a finalized local recording.
+
+LiveKit's own `record=` option is independent from the custom Finchvox exporter. If the agent is connected to LiveKit Cloud, do not assume `record=True` is local-only. See the full setup guide before choosing recording settings for a privacy-sensitive deployment.
+
+## Docker/container note
+
+If the agent runs in a container and Finchvox runs elsewhere, `localhost:4317` points at the agent container and is usually wrong. Point `endpoint` at the Finchvox container/service name and pass the corresponding HTTP endpoint to `upload_session_artifacts()`.

@@ -11,6 +11,7 @@ from finchvox.adapters import get_adapter
 from finchvox.audio_utils import find_chunks, combine_chunks
 from finchvox.conversation import Conversation
 from finchvox.metrics import Metrics
+from finchvox.livekit_report import load_livekit_report, report_events, report_messages
 from finchvox.session import Session
 from finchvox.collector.config import (
     get_sessions_base_dir,
@@ -29,13 +30,10 @@ if not UI_DIR.exists():
 
 def _get_finalized_audio_file(data_dir: Path, session_id: str) -> Path | None:
     session_dir = get_session_dir(data_dir, session_id)
-    opus_file = session_dir / "audio.opus"
-    wav_file = session_dir / "audio.wav"
-
-    if opus_file.exists():
-        return opus_file
-    if wav_file.exists():
-        return wav_file
+    for extension in (".opus", ".wav", ".mp3", ".ogg", ".flac", ".webm", ".m4a"):
+        candidate = session_dir / f"audio{extension}"
+        if candidate.exists():
+            return candidate
     return None
 
 
@@ -44,8 +42,12 @@ def _get_combined_audio_file(
 ) -> tuple[Path, str, bool]:
     finalized = _get_finalized_audio_file(data_dir, session_id)
     if finalized:
-        media_type = "audio/opus" if finalized.suffix == ".opus" else "audio/wav"
-        return finalized, media_type, False
+        media_types = {
+            ".opus": "audio/opus", ".wav": "audio/wav", ".mp3": "audio/mpeg",
+            ".ogg": "audio/ogg", ".flac": "audio/flac", ".webm": "audio/webm",
+            ".m4a": "audio/mp4",
+        }
+        return finalized, media_types.get(finalized.suffix, "application/octet-stream"), False
 
     audio_dir = get_session_audio_dir(data_dir, session_id)
     if not audio_dir.exists():
@@ -145,6 +147,10 @@ async def _handle_get_session_raw(data_dir: Path, session_id: str) -> JSONRespon
 
     content = {"traces": spans, "logs": logs}
 
+    report_file = session.session_dir / "livekit_report.json"
+    if report_file.exists():
+        content["livekit_session_report"] = json.loads(report_file.read_text())
+
     if session.has_environment:
         content["environment"] = json.loads(session.environment_file.read_text())
 
@@ -181,11 +187,27 @@ async def _handle_get_session_logs(
 async def _handle_get_session_conversation(
     data_dir: Path, session_id: str
 ) -> JSONResponse:
-    spans = _get_session_spans(data_dir, session_id)
+    session = _get_session(data_dir, session_id)
+    spans = session.get_spans()
     adapter = get_adapter(spans)
     normalized_spans = adapter.normalize_spans(spans)
-    conversation = Conversation(normalized_spans)
-    return JSONResponse({"messages": conversation.to_dict_list()})
+    trace_messages = Conversation(normalized_spans).to_dict_list()
+
+    report = load_livekit_report(session.session_dir)
+    if report:
+        enriched_messages = report_messages(report, trace_messages)
+        if enriched_messages:
+            return JSONResponse(
+                {
+                    "messages": enriched_messages,
+                    "events": report_events(report),
+                    "source": "livekit_session_report",
+                }
+            )
+
+    return JSONResponse(
+        {"messages": trace_messages, "events": [], "source": "opentelemetry"}
+    )
 
 
 async def _handle_get_session_audio(
@@ -354,10 +376,14 @@ def register_ui_routes(app: FastAPI, data_dir: Path = None):
 
     @app.get("/api/sessions/{session_id}/metrics")
     async def get_session_metrics(session_id: str) -> JSONResponse:
-        spans = _get_session_spans(data_dir, session_id)
+        session = _get_session(data_dir, session_id)
+        spans = session.get_spans()
         adapter = get_adapter(spans)
         normalized_spans = adapter.normalize_spans(spans)
-        metrics = Metrics(normalized_spans)
+        trace_messages = Conversation(normalized_spans).to_dict_list()
+        report = load_livekit_report(session.session_dir)
+        report_message_list = report_messages(report, trace_messages) if report else []
+        metrics = Metrics(normalized_spans, report_messages=report_message_list)
         return JSONResponse(metrics.to_dict())
 
     @app.get("/api/sessions/{session_id}/download")

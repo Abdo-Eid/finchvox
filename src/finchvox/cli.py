@@ -34,8 +34,7 @@ def cmd_version(args):
 
 def cmd_start(args):
     """Handle the 'start' subcommand."""
-    if args.telemetry.lower() == "false":
-        os.environ["FINCHVOX_TELEMETRY"] = "false"
+    os.environ["FINCHVOX_TELEMETRY"] = args.telemetry.lower()
 
     if args.data_dir:
         data_dir = Path(args.data_dir).expanduser().resolve()
@@ -63,7 +62,7 @@ def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
         prog="finchvox",
-        description="FinchVox - Voice AI observability dev tool for Pipecat",
+        description="Finchvox - local Voice AI session replay for LiveKit Agents and Pipecat",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -98,7 +97,7 @@ Examples:
         help=f"gRPC server port (default: {GRPC_PORT})",
     )
     start_parser.add_argument(
-        "--host", type=str, default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)"
+        "--host", type=str, default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)"
     )
     start_parser.add_argument(
         "--data-dir",
@@ -109,8 +108,9 @@ Examples:
     start_parser.add_argument(
         "--telemetry",
         type=str,
-        default="true",
-        help="Enable or disable anonymous usage telemetry (default: true)",
+        choices=("true", "false"),
+        default="false",
+        help="Enable or disable anonymous usage telemetry (default: false)",
     )
     start_parser.set_defaults(func=cmd_start)
 

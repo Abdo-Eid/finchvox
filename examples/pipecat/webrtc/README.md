@@ -1,41 +1,49 @@
-# Finchvox Tracing for Pipecat
+# Finchvox tracing for Pipecat
 
-This demo showcases session recording for Pipecat apps using Finchvox.
+This demo shows the original Pipecat session-recording workflow retained by this fork.
 
-## Setup Instructions
+## Setup
 
-### 1. Install and start Finchvox
+### 1. Install Finchvox with Pipecat support
 
-See the main [README](../../README.md) for installation instructions.
+See the main [`README.md`](../../../README.md), then install the optional Pipecat extra:
 
-### 2. Environment Configuration
-
+```bash
+uv sync --extra pipecat
 ```
+
+### 2. Configure the environment
+
+```bash
 cp env.example .env
 ```
 
-Update the `.env` file with the required API creds.
+Fill in the provider credentials required by the demo. Do not commit the populated `.env` file.
 
-### 3. Setup venv and install Dependencies
+### 3. Install the demo dependencies
+
+From this directory:
 
 ```bash
 uv sync
 ```
 
-### 4. Run the Demo
+### 4. Run Finchvox and the demo
 
-Start the FinchVox server:
+Start Finchvox in one terminal:
 
 ```bash
 finchvox start
 ```
 
-Run the bot:
+Run the bot in another:
 
 ```bash
 uv run bot.py
 ```
 
-### 5. View Traces in Finchvox
+### 5. Inspect the replay
 
-Open your browser to [http://localhost:3000](http://localhost:3000) to view session recordings.
+Open `http://localhost:3000` to inspect captured sessions.
+
+For LiveKit Agents, use [`../../livekit/README.md`](../../livekit/README.md) instead.

@@ -939,7 +939,6 @@ source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
-    { name = "aiortc" },
     { name = "apscheduler" },
     { name = "fastapi" },
     { name = "grpcio" },
@@ -948,13 +947,16 @@ dependencies = [
     { name = "opentelemetry-instrumentation-logging" },
     { name = "opentelemetry-proto" },
     { name = "opentelemetry-sdk" },
-    { name = "pipecat-ai", extra = ["cartesia", "daily", "deepgram", "silero"] },
     { name = "protobuf" },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.optional-dependencies]
+pipecat = [
+    { name = "aiortc" },
+    { name = "pipecat-ai", extra = ["cartesia", "daily", "deepgram", "silero"] },
+]
 dev = [
     { name = "pre-commit" },
     { name = "pytest" },
@@ -975,7 +977,7 @@ livekit = [
 requires-dist = [
     { name = "aiofiles", specifier = ">=24.1.0" },
     { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "aiortc", specifier = ">=1.14.0" },
+    { name = "aiortc", marker = "extra == 'pipecat'", specifier = ">=1.14.0" },
     { name = "apscheduler", specifier = ">=3.10.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "grpcio", specifier = ">=1.60.0" },
@@ -989,7 +991,7 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-logging", specifier = ">=0.48b0" },
     { name = "opentelemetry-proto", specifier = ">=1.27.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.27.0" },
-    { name = "pipecat-ai", extras = ["cartesia", "daily", "deepgram", "silero"], specifier = ">=0.0.98" },
+    { name = "pipecat-ai", extras = ["cartesia", "daily", "deepgram", "silero"], marker = "extra == 'pipecat'", specifier = ">=0.0.98" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "protobuf", specifier = ">=4.25.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
@@ -1000,7 +1002,7 @@ requires-dist = [
     { name = "twine", marker = "extra == 'dev'", specifier = ">=6.2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
 ]
-provides-extras = ["dev", "livekit"]
+provides-extras = ["dev", "livekit", "pipecat"]
 
 [[package]]
 name = "flatbuffers"

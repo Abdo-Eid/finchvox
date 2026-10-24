@@ -5,6 +5,23 @@ All notable changes to **Finchvox** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased — LiveKit local insights fork
+
+### Added
+
+- Local-first LiveKit Agents OpenTelemetry integration with optional correlated OTLP logs.
+- LiveKit `SessionReport` ingestion, report-to-trace correlation, and finalized recording upload.
+- LiveKit-style synchronized session replay UI with Transcript, Trace, Logs, Metrics, Environment, error markers, and inspectors.
+- Support for current `lk.pii.*` telemetry attributes plus legacy LiveKit attribute fallbacks.
+- LiveKit voice latency normalization for E2E, transcription/end-of-turn delays, LLM TTFT, TTS TTFB, and queue wait where available.
+- `docs/LIVEKIT_LOCAL_SETUP.md` and a runnable `examples/livekit/agent.py`.
+
+### Changed
+
+- Finchvox anonymous product telemetry is disabled by default in this fork.
+- UI assets are local; session pages no longer require the Tailwind Play CDN.
+- Pipecat runtime packages moved to the optional `pipecat` extra so LiveKit-only installs stay smaller.
+
 ## [0.0.13] - 2026-2-12
 
 - Add audio compression with automatic scheduling. WAV chunks are converted to Opus format using ffmpeg, with automatic background compression for inactive sessions.

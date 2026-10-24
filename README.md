@@ -1,123 +1,309 @@
-# <img src="ui/images/finchvox-logo.png" height=24 /> Finchvox - Voice AI Observability, Elevated.
+# <img src="ui/images/finchvox-logo.png" height="24" /> Finchvox — local session replay for LiveKit Agents
 
-Meet Finchvox, local session replay purpose-built for Voice AI apps.
+Finchvox is a local-first voice-agent debugger built around a simple idea: **audio, transcript, traces, logs, tools, handoffs, errors, and latency metrics should all share one session clock**.
 
-Finchvox unifies conversation audio, logs, traces, and metrics in a single UI, highlighting voice-specific problems like interruptions and high user <-> bot latency. Finchvox is currently designed for local, development usage.
+This fork makes the LiveKit Agents integration first-class while retaining the original Pipecat support. It is designed for the same debugging workflow you get from a purpose-built agent-insights UI, but with the collector, data, and UI running on your machine.
 
-Visit [Finchvox.dev](https://finchvox.dev) to signup for our production-ready hosted and self-hosted options.
+> Independent project: this fork is not affiliated with or endorsed by LiveKit. It does not ship LiveKit branding or proprietary assets. Finchvox is MIT licensed; see [`LICENSE`](LICENSE).
 
-_👇 Click the image for a short video:_
-<a href="https://github.com/user-attachments/assets/f093e764-82ae-41cb-9089-4e2d19c7867f" target="_blank"><img src="./docs/screenshot.png" /></a>
+## UI
 
-## Table of Contents
+### Sessions
 
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Setup](#setup)
-- [Configuration](#configuration)
-- [Usage](#usage---finchvox-server)
-- [Troubleshooting](#troubleshooting)
-- [Telemetry](#telemetry)
+![Local sessions index](docs/livekit-insights-sessions.png)
 
-## Prerequisites
+### Transcript + synchronized replay
 
-- Python 3.10 or higher
-- Pipecat 0.0.68 or higher
+![Local transcript](docs/livekit-insights-transcript.png)
 
-## Installation
+### Hierarchical trace waterfall + inspector
+
+![Local trace waterfall](docs/livekit-insights-trace.png)
+
+## What this fork adds
+
+- LiveKit Agents OpenTelemetry support, including current `lk.pii.*` content attributes and older stored-trace fallbacks.
+- A synchronized **Transcript / Trace / Logs** Agent Insights workflow.
+- **Metrics / Environment** session analytics views.
+- Hierarchical LiveKit spans for sessions, user/agent turns, STT, LLM, TTS, tools, handoffs, room I/O, and errors.
+- Global playhead and time-aligned error/event markers across waveform, transcript, and trace views.
+- Right-side inspectors for spans, logs, attributes, errors, timing, content, and raw data.
+- LiveKit voice metrics such as E2E latency, transcription delay, end-of-turn delay, queue wait, LLM TTFT, and TTS TTFB when emitted by the SDK.
+- Local OTLP log ingestion beside traces.
+- Optional LiveKit `SessionReport` ingestion and automatic report-to-trace correlation by job/room identifiers.
+- Finalized audio attachment for local playback/waveform replay.
+- WAV, MP3, OGG, FLAC, OPUS, WebM, and M4A finalized audio support.
+- Fully local UI assets; no Tailwind CDN dependency.
+- Anonymous Finchvox product telemetry disabled by default in this fork.
+- Pipecat integration retained as an optional extra.
+
+## Architecture
+
+```text
+LiveKit Agent
+   │
+   ├── OTLP traces ────────────────┐
+   ├── OTLP logs ─────────────────┤
+   │                               ▼
+   │                         Finchvox server
+   │                       gRPC :4317 / HTTP :3000
+   │                               │
+   ├── SessionReport ──────────────┤
+   └── finalized audio ────────────┤
+                                   ▼
+                           ~/.finchvox/sessions
+                                   │
+                                   ▼
+                          http://localhost:3000
+```
+
+OpenTelemetry provides the trace/latency structure. A `SessionReport` improves the final transcript/event/usage picture. **Audio is separate** because replayable audio is not contained in OTel spans.
+
+## Quick start: LiveKit Agents
+
+### 1. Install
+
+From this repository:
 
 ```bash
-# uv
-uv add finchvox "pipecat-ai[tracing]"
-
-# Or with pip
-pip install finchvox "pipecat-ai[tracing]"
+uv sync --extra livekit
 ```
 
-## Setup
+Or:
 
-1. Add the following to the top of your bot (e.g., `bot.py`):
-
-```python
-import finchvox
-from finchvox import FinchvoxProcessor
-
-finchvox.init(service_name="my-voice-app")
+```bash
+pip install -e ".[livekit]"
 ```
 
-2. Add `FinchvoxProcessor` to your pipeline, ensuring it comes after `transport.output()`:
+The LiveKit extra no longer requires the Pipecat runtime. If you also use Pipecat:
 
-```python
-pipeline = Pipeline([
-    # SST, LLM, TTS, etc. processors
-    transport.output(),
-    FinchvoxProcessor(), # Must come after transport.output()
-    context_aggregator.assistant(),
-])
+```bash
+uv sync --extra livekit --extra pipecat
 ```
 
-3. Initialize your `PipelineTask` with metrics, tracing and turn tracking enabled:
-
-```python
-task = PipelineTask(
-    pipeline,
-    params=PipelineParams(enable_metrics=True),
-    enable_tracing=True,
-    enable_turn_tracking=True,
-)
-```
-
-## Configuration
-
-The `finchvox.init()` function accepts the following optional parameters:
-
-| Parameter      | Default                   | Description                                               |
-| -------------- | ------------------------- | --------------------------------------------------------- |
-| `endpoint`     | `"http://localhost:4317"` | Finchvox collector endpoint                               |
-| `insecure`     | `True`                    | Use insecure gRPC connection (no TLS)                     |
-| `capture_logs` | `True`                    | Send logs to collector alongside traces                   |
-| `log_modules`  | `None`                    | Additional module prefixes to capture (e.g., `["myapp"]`) |
-
-By default, logs from `pipecat.*`, `finchvox.*`, `__main__`, and any source files in your project directory are captured. Use `log_modules` to include additional third-party modules.
-
-## Usage - Finchvox server
+### 2. Start Finchvox
 
 ```bash
 uv run finchvox start
 ```
 
-For the list of available options, run:
+Open:
 
-```bash
-uv run finchvox --help
+```text
+http://localhost:3000
 ```
 
-## Troubleshooting
+By default:
 
-### No spans being written
+- UI / HTTP API: `localhost:3000`
+- OTLP/gRPC traces + logs: `localhost:4317`
+- data directory: `~/.finchvox`
+- bind address: `127.0.0.1` (local machine only)
 
-1. Check collector is running: Look for "OTLP collector listening on port 4317" log message
-2. Verify client endpoint: Ensure Pipecat is configured to send to `http://localhost:4317`
-
-## Telemetry
-
-FinchVox collects minimal, anonymous usage telemetry to help improve the project. No personal data, IP addresses, or session content is collected.
-
-**What's collected:**
-
-- Event type (`server_start`, `session_ingest`, `session_view`)
-- FinchVox version
-- Operating system (macOS, Linux, or Windows)
-- Timestamp
-
-**Disable telemetry:**
+Use a project-local data directory if preferred:
 
 ```bash
-finchvox start --telemetry false
+uv run finchvox start --data-dir ./.finchvox-data
 ```
 
-Or set the environment variable:
+Finchvox binds to loopback by default. If another container or machine must reach it, opt in explicitly with `--host 0.0.0.0` and protect the port at the network layer.
+
+### 3. Instrument the agent
+
+Initialize Finchvox before `AgentSession.start()`:
+
+```python
+import finchvox
+
+tracer_provider = finchvox.init_livekit(
+    service_name="my-livekit-agent",
+    endpoint="http://localhost:4317",
+    capture_logs=True,
+    allow_pii=True,
+)
+```
+
+Flush batched telemetry before the job exits:
+
+```python
+async def flush_observability():
+    finchvox.flush_livekit(tracer_provider)
+
+ctx.add_shutdown_callback(flush_observability)
+```
+
+### 4. Finalize the local replay
+
+```python
+from finchvox.livekit import upload_session_artifacts
+
+async def on_session_end(ctx):
+    report = ctx.make_session_report()
+
+    # Make the completed trace visible before report correlation.
+    finchvox.flush_livekit(tracer_provider)
+
+    await upload_session_artifacts(report=report)
+```
+
+Register that callback:
+
+```python
+@server.rtc_session(on_session_end=on_session_end)
+async def entrypoint(ctx):
+    ...
+```
+
+If the report contains a valid local `audio_recording_path`, Finchvox uploads that recording automatically. You can also pass your own finalized file with `audio_path=...`.
+
+## Full LiveKit setup guide
+
+For a complete copy/paste integration, local-only vs LiveKit Cloud behavior, audio recording, Docker networking, privacy, troubleshooting, and a full agent example, read:
+
+**[`docs/LIVEKIT_LOCAL_SETUP.md`](docs/LIVEKIT_LOCAL_SETUP.md)**
+
+A runnable example lives in:
+
+**[`examples/livekit/agent.py`](examples/livekit/agent.py)**
+
+## Privacy and local-only behavior
+
+Finchvox's own anonymous product telemetry is disabled by default in this fork.
+
+The more important setting is LiveKit trace content:
+
+```python
+finchvox.init_livekit(allow_pii=True)
+```
+
+`allow_pii=True` lets Finchvox receive conversational content used for the local replay, including transcripts, model responses, and tool payloads when LiveKit emits them. Treat the local Finchvox data directory as sensitive.
+
+Use:
+
+```python
+finchvox.init_livekit(allow_pii=False)
+```
+
+for structural/timing telemetry without LiveKit's PII/content attributes.
+
+### If you connect to LiveKit Cloud
+
+Your **custom** OTel exporter still sends its copy of spans to Finchvox, but LiveKit's own `record`/observability settings are separate. Do not assume `record=True` is local-only when connected to LiveKit Cloud.
+
+If you require local-only Finchvox telemetry while using LiveKit Cloud for media, configure LiveKit recording/observability accordingly and attach audio to Finchvox from your own local recorder if you need waveform playback. The full guide explains the tradeoff.
+
+### Fully self-hosted LiveKit
+
+`ctx.make_session_report()` is generated in the agent process and works with self-hosted LiveKit. The custom OTel path to Finchvox is also independent of LiveKit Cloud observability.
+
+## What Finchvox understands from LiveKit
+
+Typical hierarchy:
+
+```text
+agent_session
+├── user_turn
+│   ├── stt_node / stt_request
+│   └── eou_wait
+├── agent_turn
+│   ├── llm_node / llm_request
+│   ├── function_tool / execute_tool
+│   └── tts_node / tts_request
+├── update_agent           # handoff
+└── room_connect / room_io
+```
+
+The adapter recognizes current and legacy LiveKit attributes for:
+
+- transcript/response content,
+- tool arguments and results,
+- agent labels and handoffs,
+- speech/generation IDs,
+- interruption state,
+- room/job/participant context,
+- model/provider names,
+- input/output token counts,
+- E2E and pipeline latency,
+- exceptions and errors.
+
+## Local logs
+
+`capture_logs=True` installs an OpenTelemetry logging handler pointed at Finchvox's local collector. Python logs emitted with active LiveKit context can retain trace/span correlation and appear in the session Logs view.
+
+Disable local OTLP logs without disabling traces:
+
+```python
+finchvox.init_livekit(capture_logs=False)
+```
+
+## Audio
+
+OTLP spans do not contain replayable audio. To show the waveform/playback experience, attach a finalized recording.
+
+Automatic path from a LiveKit report:
+
+```python
+await upload_session_artifacts(report=ctx.make_session_report())
+```
+
+Explicit recording:
+
+```python
+await upload_session_artifacts(
+    report=ctx.make_session_report(),
+    audio_path="./recordings/session.ogg",
+)
+```
+
+Supported finalized formats:
+
+```text
+.wav  .mp3  .ogg  .flac  .opus  .webm  .m4a
+```
+
+## Pipecat
+
+The original Finchvox workflow remains available as an optional extra:
 
 ```bash
-export FINCHVOX_TELEMETRY=false
+uv sync --extra pipecat
 ```
+
+```python
+import finchvox
+from finchvox import FinchvoxProcessor
+
+finchvox.init(service_name="my-pipecat-app")
+```
+
+Use `FinchvoxProcessor()` in the Pipecat pipeline as in the upstream project.
+
+## Development
+
+See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+
+Core checks:
+
+```bash
+PYTHONPATH=src pytest -q
+node --check ui/js/session_detail.js
+node --check ui/js/logs_view.js
+node --check ui/js/sessions_list.js
+PYTHONPATH=src python -m compileall -q src tests examples/livekit
+```
+
+The packaged validation snapshot is documented in [`VALIDATION.md`](VALIDATION.md).
+
+## Known limitations
+
+- Audio must be supplied separately from OTel.
+- Report auto-correlation needs a completed span carrying a matching LiveKit job/room identifier; passing an explicit trace ID remains the fallback.
+- Logs emitted without usable trace context may not be assignable to a particular session.
+- Realtime-model sessions expose a different set of per-turn latency fields than STT → LLM → TTS pipelines.
+- This is a development-oriented local observability tool. Add authentication/TLS before exposing it on an untrusted network.
+
+## Upstream and license
+
+This fork is based on the MIT-licensed [Finchvox](https://github.com/finchvox/finchvox) project and its LiveKit-oriented work. Keep the upstream copyright/license notice when redistributing modified versions.
+
+See [`LICENSE`](LICENSE).

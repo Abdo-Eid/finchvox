@@ -1,6 +1,8 @@
 function conversationViewMixin() {
     return {
         conversationMessages: [],
+        conversationEvents: [],
+        conversationSource: null,
         conversationLoading: false,
         conversationError: null,
 
@@ -13,7 +15,9 @@ function conversationViewMixin() {
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
                 const data = await response.json();
-                this.conversationMessages = data.messages;
+                this.conversationMessages = data.messages || [];
+                this.conversationEvents = data.events || [];
+                this.conversationSource = data.source || null;
             } catch (error) {
                 console.error('Failed to load conversation:', error);
                 this.conversationError = error.message;

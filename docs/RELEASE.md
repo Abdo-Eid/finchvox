@@ -1,71 +1,58 @@
-# Releasing FinchVox to PyPI
+# Releasing this Finchvox fork
 
-Step-by-step guide for manually releasing FinchVox to PyPI.
+This repository is based on the MIT-licensed Finchvox project. If you publish your own fork, use your own repository/package release process and keep the upstream license notice.
 
-## Prerequisites
+## Before releasing
 
-- [ ] PyPI account with API token configured
-- [ ] `uv` installed (or `pip`)
-- [ ] Clean git working directory
-
-## Release Workflow
-
-### 1. Update Version
-
-Edit `pyproject.toml`:
-
-```toml
-version = "0.0.2"  # Increment version
-```
-
-### 2. Update Changelog (Optional)
-
-Add release notes to `CHANGELOG.md`.
-
-### 3. Commit and Tag
+1. Update `pyproject.toml` with the version you intend to publish.
+2. Update `CHANGELOG.md`.
+3. Run the validation commands in [`DEVELOPMENT.md`](DEVELOPMENT.md).
+4. Confirm the LiveKit setup guide still matches the current example:
 
 ```bash
-# Commit changes
-git add -A
-git commit -m "Release v0.0.2"
-
-# Create git tag
-git tag v0.0.2
-
-# Push commits and tags
-git push && git push --tags
+PYTHONPATH=src python -m compileall -q src tests examples/livekit
+node --check ui/js/session_detail.js
+node --check ui/js/logs_view.js
+node --check ui/js/sessions_list.js
+uv lock --check
 ```
 
-## Build Package
+5. Run the test suite with the optional integrations you intend to support:
 
-### 1. Clean Previous Builds
+```bash
+uv sync --extra livekit --extra pipecat --extra dev
+uv run pytest -q
+```
+
+## Build
 
 ```bash
 rm -rf dist/
-```
-
-### 2. Build
-
-```bash
 uv build
 ```
 
-Expected output: Creates `dist/finchvox-0.0.2-py3-none-any.whl` and `dist/finchvox-0.0.2.tar.gz`
-
-### 3. Verify Build
+Inspect the wheel/sdist before publishing:
 
 ```bash
 ls -lh dist/
+python -m zipfile -l dist/*.whl | head -100
 ```
 
-## Upload to PyPI
+The wheel should include the Finchvox Python package and the bundled local UI assets.
+
+## Publishing
+
+If you are publishing under a different package name, change the package metadata first. Do not publish a modified fork under someone else's package/project identity without permission.
+
+For a private/internal package index, use that index's normal upload mechanism. For PyPI, `uv publish` or `twine upload` can be used after configuring credentials.
+
+## Git release
+
+Once validation and package inspection are complete:
 
 ```bash
- uv publish dist/*
+git add -A
+git commit -m "Release <version>"
+git tag <version>
+git push --follow-tags
 ```
-
-Enter your PyPI API token when prompted.
-
-### 3. Verify Upload
-
-Visit: https://pypi.org/project/finchvox/

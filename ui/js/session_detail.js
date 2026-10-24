@@ -123,6 +123,10 @@ function sessionDetailApp() {
             }
         },
 
+        isAgentInsightsView() {
+            return ['conversation', 'trace', 'logs'].includes(this.selectedView);
+        },
+
         enrichSpan(span) {
             return {
                 ...span,
@@ -213,7 +217,7 @@ function sessionDetailApp() {
 
             let addedExpansions = false;
             this.spans
-                .filter(span => span._normalized?.category === 'root')
+                .filter(span => ['root', 'turn'].includes(span._normalized?.category))
                 .forEach(span => {
                     const children = childrenMap[span.span_id_hex] || [];
                     if (children.length > 0 && !this.expandedSpanIds.has(span.span_id_hex)) {
@@ -228,7 +232,9 @@ function sessionDetailApp() {
         },
 
         buildWaterfallTree() {
-            this.waterfallSpans = [...this.spans].sort((a, b) => a.startMs - b.startMs);
+            const { childrenMap, rootSpans } = this.buildSpanHierarchy();
+            this.initializeDefaultExpansion(childrenMap);
+            this.waterfallSpans = this.flattenSpanTree(rootSpans, childrenMap);
         },
 
         toggleSpanExpansion(span) {
@@ -303,7 +309,7 @@ function sessionDetailApp() {
                 }
             });
 
-            const categoryOrder = ['root', 'turn', 'stt', 'llm', 'tts', 'other'];
+            const categoryOrder = ['root', 'turn', 'stt', 'llm', 'tool', 'handoff', 'tts', 'transport', 'other'];
 
             return [...typeInfo.entries()]
                 .sort((a, b) => {
@@ -364,6 +370,9 @@ function sessionDetailApp() {
 
         getTimelineBarStyle(span) {
             const totalDuration = this.maxTime - this.minTime;
+            if (!Number.isFinite(totalDuration) || totalDuration <= 0) {
+                return { left: '0%', width: '0.15%', isShort: true };
+            }
             const startPercent = ((span.startMs - this.minTime) / totalDuration) * 100;
             const durationPercent = (span.durationMs / totalDuration) * 100;
             let widthPercent = Math.max(durationPercent, 0.15);
@@ -772,10 +781,13 @@ function sessionDetailApp() {
             if (!attributes) return '{}';
             const attrs = {};
             attributes.forEach(attr => {
-                attrs[attr.key] = attr.value.string_value ||
-                                 attr.value.int_value ||
-                                 attr.value.double_value ||
-                                 attr.value.bool_value;
+                if (!attr?.value) return;
+                for (const valueKey of ['string_value', 'int_value', 'double_value', 'bool_value', 'bytes_value', 'array_value', 'kvlist_value']) {
+                    if (Object.prototype.hasOwnProperty.call(attr.value, valueKey)) {
+                        attrs[attr.key] = attr.value[valueKey];
+                        break;
+                    }
+                }
             });
             return JSON.stringify(attrs, null, 2);
         },
@@ -825,14 +837,22 @@ function sessionDetailApp() {
         // Get a specific attribute value
         getAttribute(span, key) {
             if (!span || !span.attributes) return null;
-
             const attr = span.attributes.find(a => a.key === key);
-            if (!attr) return null;
-
-            return attr.value.string_value ||
-                   attr.value.int_value ||
-                   attr.value.double_value ||
-                   attr.value.bool_value;
+            if (!attr || !attr.value) return null;
+            for (const valueKey of ['string_value', 'int_value', 'double_value', 'bool_value', 'bytes_value']) {
+                if (Object.prototype.hasOwnProperty.call(attr.value, valueKey)) {
+                    return attr.value[valueKey];
+                }
+            }
+            if (attr.value.array_value?.values) {
+                return attr.value.array_value.values.map(v => {
+                    for (const valueKey of ['string_value', 'int_value', 'double_value', 'bool_value']) {
+                        if (Object.prototype.hasOwnProperty.call(v, valueKey)) return v[valueKey];
+                    }
+                    return null;
+                });
+            }
+            return null;
         },
 
         // Check if a specific attribute exists
@@ -861,9 +881,8 @@ function sessionDetailApp() {
                 return span._normalized.ttfb_seconds;
             }
             if (!span.attributes) return null;
-            const ttfbAttr = span.attributes.find(a => a.key === 'metrics.ttfb');
-            if (!ttfbAttr || !ttfbAttr.value.double_value) return null;
-            return ttfbAttr.value.double_value;
+            const value = this.getAttribute(span, 'metrics.ttfb');
+            return value === null ? null : Number(value);
         },
 
         // Format TTFB value for display
@@ -877,12 +896,12 @@ function sessionDetailApp() {
 
         // Get user-bot latency value from span attributes
         getUserBotLatency(span) {
-            if (!span || !span.attributes) return null;
-
-            const latencyAttr = span.attributes.find(a => a.key === 'turn.user_bot_latency_seconds');
-            if (!latencyAttr || !latencyAttr.value.double_value) return null;
-
-            return latencyAttr.value.double_value;
+            if (!span) return null;
+            if (span._normalized?.e2e_latency_seconds !== null && span._normalized?.e2e_latency_seconds !== undefined) {
+                return Number(span._normalized.e2e_latency_seconds);
+            }
+            const value = this.getAttribute(span, 'turn.user_bot_latency_seconds') ?? this.getAttribute(span, 'lk.e2e_latency');
+            return value === null ? null : Number(value);
         },
 
         // Check if latency is >= 2 seconds (slow response)
@@ -908,19 +927,21 @@ function sessionDetailApp() {
 
         // Get interruption status from span attributes
         wasInterrupted(span) {
-            if (!span || !span.attributes) return null;
-
-            const interruptedAttr = span.attributes.find(a => a.key === 'turn.was_interrupted');
-            if (!interruptedAttr || interruptedAttr.value.bool_value === undefined) return null;
-
-            return interruptedAttr.value.bool_value;
+            if (!span) return null;
+            if (span._normalized?.interrupted !== undefined && span._normalized?.interrupted !== null) {
+                return Boolean(span._normalized.interrupted);
+            }
+            const value = this.getAttribute(span, 'turn.was_interrupted') ?? this.getAttribute(span, 'lk.interrupted');
+            return value === null ? null : Boolean(value);
         },
 
         hasException(span) {
-            if (span.events) {
-                return span.events.some(e => e.name === 'exception');
-            }
-            return false;
+            if (!span) return false;
+            if (span._normalized?.is_error) return true;
+            const status = span.status?.code;
+            if (status === 2 || status === 'STATUS_CODE_ERROR' || status === 'ERROR') return true;
+            if (this.hasAttribute(span, 'error.type') || this.getAttribute(span, 'lk.function_tool.is_error') === true) return true;
+            return Boolean(span.events?.some(e => e.name === 'exception'));
         },
 
         // Format interruption status for display
@@ -1222,9 +1243,298 @@ function sessionDetailApp() {
 
         getTurnChunks() {
             if (!this.isDataReady()) return [];
+
+            if (this.platform === 'livekit' && this.conversationMessages?.length) {
+                return this.conversationMessages.map((message, index) => {
+                    const span = this.getMessageSpan(message);
+                    if (!span) return null;
+                    return {
+                        span_id_hex: `${span.span_id_hex}-${message.role}-${index}`,
+                        span,
+                        humanText: message.role === 'user' ? message.content : '',
+                        botText: message.role === 'assistant' ? message.content : '',
+                        style: this.getTimelineBarStyle(span),
+                        wasInterrupted: Boolean(message.was_interrupted),
+                    };
+                }).filter(Boolean);
+            }
+
             return this.spans
                 .filter(s => s._normalized?.category === 'turn')
                 .map(turn => this.buildTurnChunk(turn));
+        },
+
+        getSpanDisplayName(span) {
+            if (!span) return '';
+            if (span._normalized?.event_kind === 'tool') {
+                return span._normalized?.tool_name || this.getAttribute(span, 'gen_ai.tool.name') || this.getAttribute(span, 'lk.function_tool.name') || 'Tool call';
+            }
+            if (span._normalized?.event_kind === 'handoff') return 'Agent handoff';
+            return span._normalized?.display_name || (span.name || 'span').replaceAll('_', ' ');
+        },
+
+        getSpanSubtitle(span) {
+            if (!span) return '';
+            const category = span._normalized?.category;
+            if (category === 'llm') {
+                return this.getAttribute(span, 'gen_ai.response.model') || this.getAttribute(span, 'gen_ai.request.model') || this.getAttribute(span, 'gen_ai.provider.name') || '';
+            }
+            if (category === 'tool') {
+                return span._normalized?.tool_call_id || this.getAttribute(span, 'gen_ai.tool.call.id') || '';
+            }
+            if (category === 'handoff') {
+                const from = span._normalized?.previous_agent_label || this.getAttribute(span, 'lk.previous_agent_label');
+                const to = span._normalized?.agent_label || this.getAttribute(span, 'lk.agent_label') || this.getAttribute(span, 'gen_ai.agent.name');
+                return [from, to].filter(Boolean).join(' → ');
+            }
+            if (category === 'turn' && this.getUserBotLatency(span) !== null) {
+                return `Response ${this.formatUserBotLatency(span)}`;
+            }
+            return '';
+        },
+
+        getTraceTicks(count = 7) {
+            const totalMs = this.maxTime - this.minTime;
+            if (!Number.isFinite(totalMs) || totalMs <= 0 || count < 2) return [];
+            return Array.from({ length: count }, (_, index) => {
+                const percent = (index / (count - 1)) * 100;
+                const relativeMs = totalMs * (index / (count - 1));
+                return { percent, label: formatDuration(relativeMs) };
+            });
+        },
+
+        getTraceErrorCount() {
+            return this.spans.filter(span => this.hasException(span)).length;
+        },
+
+        getTraceRowClass(span) {
+            if (this.hasException(span)) return 'trace-row-error';
+            if (span._normalized?.event_kind === 'tool') return 'trace-row-tool';
+            if (span._normalized?.event_kind === 'handoff') return 'trace-row-handoff';
+            return '';
+        },
+
+        getErrorRegions() {
+            return this.spans.filter(span => this.hasException(span)).map(span => ({
+                span,
+                style: this.getTimelineBarStyle(span)
+            }));
+        },
+
+        getPlayheadStyle() {
+            if (!this.duration || !Number.isFinite(this.currentTime)) return 'left: 0%';
+            const percent = Math.max(0, Math.min(100, (this.currentTime / this.duration) * 100));
+            return `left: ${percent}%`;
+        },
+
+        getInsightEvents() {
+            const traceEvents = this.spans
+                .filter(span => ['tool', 'handoff'].includes(span._normalized?.event_kind) || this.hasException(span))
+                .map(span => ({
+                    span,
+                    kind: this.hasException(span) ? 'error' : span._normalized?.event_kind,
+                    timestamp: span.start_time_unix_nano,
+                    title: this.hasException(span)
+                        ? (span._normalized?.error_message || `${this.getSpanDisplayName(span)} error`)
+                        : this.getSpanDisplayName(span),
+                    subtitle: this.getSpanSubtitle(span),
+                    source: 'opentelemetry',
+                }));
+
+            const reportEvents = (this.conversationEvents || []).map(event => ({
+                ...event,
+                source: event.source || 'livekit_session_report',
+            }));
+
+            // SessionReport is richer for tool/handoff rows; keep trace errors and
+            // suppress obvious duplicate tool/handoff records when both streams exist.
+            const reportKeys = new Set(reportEvents.map(event => this.getInsightEventKey(event)));
+            const merged = [
+                ...reportEvents,
+                ...traceEvents.filter(event => event.kind === 'error' || !reportKeys.has(this.getInsightEventKey(event))),
+            ];
+            return merged.sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+        },
+
+        getInsightEventKey(event) {
+            const span = event?.span;
+            const callId = span?._normalized?.tool_call_id || this.getAttribute(span, 'gen_ai.tool.call.id');
+            if (callId) return `tool:${callId}`;
+            if (event?.kind === 'handoff') {
+                return `handoff:${event.subtitle || ''}`;
+            }
+            return `${event?.kind || 'event'}:${event?.title || ''}`;
+        },
+
+        getTranscriptFeedItems() {
+            const messages = (this.conversationMessages || []).map(message => ({
+                type: 'message',
+                timestamp: message.timestamp,
+                message
+            }));
+            const events = this.getInsightEvents().map(event => ({
+                type: 'event',
+                timestamp: event.timestamp,
+                event
+            }));
+            return [...messages, ...events].sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
+        },
+
+        getMessageSpan(message) {
+            if (!message?.span_ids?.length) return null;
+            for (const id of message.span_ids) {
+                const span = this.spans.find(s => s.span_id_hex === id);
+                if (span) return span;
+            }
+            return null;
+        },
+
+        selectConversationMessage(message) {
+            this.seekToMessage(message);
+            const span = this.getMessageSpan(message);
+            if (span) this.selectSpan(span, false);
+        },
+
+        selectInsightEvent(event) {
+            if (!event?.span) return;
+            this.selectSpan(event.span, true);
+        },
+
+        getMessageMetrics(message) {
+            const metrics = message?.metrics || {};
+            const definitions = [
+                ['e2e_latency', 'E2E'],
+                ['llm_node_ttft', 'LLM TTFT'],
+                ['tts_node_ttfb', 'TTS TTFB'],
+                ['transcription_delay', 'STT'],
+                ['end_of_turn_delay', 'EOU'],
+                ['playback_latency', 'Playback'],
+            ];
+            return definitions.flatMap(([key, label]) => {
+                const raw = metrics[key];
+                const seconds = Number(raw);
+                if (raw === null || raw === undefined || !Number.isFinite(seconds)) return [];
+                return [{ key, label, value: `${Math.round(seconds * 1000)} ms` }];
+            });
+        },
+
+        formatTranscriptConfidence(message) {
+            const raw = message?.transcript_confidence;
+            const confidence = Number(raw);
+            if (raw === null || raw === undefined || !Number.isFinite(confidence)) return '';
+            return `${(confidence * 100).toFixed(confidence >= 0.995 ? 0 : 1)}%`;
+        },
+
+        getSessionAgentLabel() {
+            for (const span of this.spans) {
+                const value = span._normalized?.agent_label || this.getAttribute(span, 'lk.agent_label') || this.getAttribute(span, 'gen_ai.agent.name') || this.getAttribute(span, 'lk.agent_name');
+                if (value) return value;
+            }
+            return this.serviceName || 'Agent';
+        },
+
+        getSessionRoomName() {
+            for (const span of this.spans) {
+                const value = this.getAttribute(span, 'lk.pii.room_name') || this.getAttribute(span, 'lk.room_name') || this.getAttribute(span, 'room_id') || this.getAttribute(span, 'lk.room_sid') || this.getAttribute(span, 'lk.room_id');
+                if (value) return value;
+            }
+            return '';
+        },
+
+        getImportantAttributes(span) {
+            if (!span) return [];
+            const preferred = [
+                'gen_ai.operation.name', 'gen_ai.provider.name', 'gen_ai.request.model', 'gen_ai.response.model',
+                'gen_ai.usage.input_tokens', 'gen_ai.usage.output_tokens', 'gen_ai.response.time_to_first_chunk',
+                'lk.response.ttft', 'lk.response.ttfb', 'lk.e2e_latency', 'lk.transcription_delay', 'lk.end_of_turn_delay',
+                'lk.on_user_turn_completed_delay', 'lk.speech.queue_wait', 'lk.interrupted', 'lk.interruption.source', 'lk.playout.position',
+                'lk.agent_label', 'lk.previous_agent_label', 'lk.agent_name', 'lk.generation_id', 'lk.parent_generation_id', 'lk.generation_count', 'lk.speech_id',
+                'lk.transcript_confidence', 'lk.eou.probability', 'lk.eou.outcome', 'lk.eou.source', 'lk.eou.detection_delay',
+                'lk.pii.room_name', 'room_id', 'job_id', 'lk.room_sid', 'lk.job_id', 'lk.participant_id', 'lk.pii.participant_identity',
+                'lk.provider_request_ids', 'lk.retry_count', 'lk.fallback.label', 'lk.fallback.index',
+                'gen_ai.tool.name', 'gen_ai.tool.call.id', 'lk.function_tool.name', 'lk.function_tool.is_error',
+                'error.type'
+            ];
+            const result = [];
+            preferred.forEach(key => {
+                const value = this.getAttribute(span, key);
+                if (value !== null && value !== undefined && value !== '') result.push({ key, value });
+            });
+            return result;
+        },
+
+        formatInspectorValue(value) {
+            if (typeof value === 'string') {
+                try { return JSON.stringify(JSON.parse(value), null, 2); } catch (_) { return value; }
+            }
+            if (typeof value === 'object') return JSON.stringify(value, null, 2);
+            return String(value);
+        },
+
+        getSpanErrors(span) {
+            if (!span) return [];
+            const errors = [];
+            if (span._normalized?.error_message) errors.push(span._normalized.error_message);
+            if (span.status?.message) errors.push(span.status.message);
+            (span.events || []).filter(e => e.name === 'exception').forEach(event => {
+                const attrs = event.attributes || [];
+                const message = attrs.find(a => a.key === 'exception.message')?.value?.string_value;
+                const type = attrs.find(a => a.key === 'exception.type')?.value?.string_value;
+                errors.push(message || type || 'Exception');
+            });
+            return [...new Set(errors.filter(Boolean))];
+        },
+
+        getChildErrors(span) {
+            if (!span?.span_id_hex) return [];
+            const byParent = new Map();
+            this.spans.forEach(candidate => {
+                const parent = candidate.parent_span_id_hex || '';
+                if (!byParent.has(parent)) byParent.set(parent, []);
+                byParent.get(parent).push(candidate);
+            });
+
+            const result = [];
+            const stack = [...(byParent.get(span.span_id_hex) || [])];
+            while (stack.length) {
+                const child = stack.shift();
+                if (this.hasException(child)) {
+                    const errors = this.getSpanErrors(child);
+                    result.push({
+                        span_id: child.span_id_hex,
+                        name: this.getSpanDisplayName(child),
+                        message: errors[0] || child._normalized?.error_message || 'Child span failed',
+                    });
+                }
+                stack.push(...(byParent.get(child.span_id_hex) || []));
+            }
+            return result;
+        },
+
+        getSpanTimingMetrics(span) {
+            if (!span) return [];
+            const normalized = span._normalized || {};
+            const entries = [
+                ['e2e', 'E2E', normalized.e2e_latency_seconds ?? this.getAttribute(span, 'lk.e2e_latency')],
+                ['transcription', 'STT', normalized.transcription_delay_seconds ?? this.getAttribute(span, 'lk.transcription_delay')],
+                ['endpointing', 'EOU', normalized.end_of_turn_delay_seconds ?? this.getAttribute(span, 'lk.end_of_turn_delay')],
+                ['turn_hook', 'Turn hook', normalized.on_user_turn_completed_delay_seconds ?? this.getAttribute(span, 'lk.on_user_turn_completed_delay')],
+                ['queue', 'Queue', normalized.queue_wait_seconds ?? this.getAttribute(span, 'lk.speech.queue_wait')],
+                ['llm_ttft', 'LLM TTFT', this.getAttribute(span, 'lk.response.ttft') ?? this.getAttribute(span, 'gen_ai.response.time_to_first_chunk')],
+                ['tts_ttfb', 'TTS TTFB', this.getAttribute(span, 'lk.response.ttfb')],
+                ['playback', 'Playback', this.getAttribute(span, 'lk.playback_latency')],
+            ];
+            return entries.flatMap(([key, label, raw]) => {
+                if (raw === null || raw === undefined || raw === '') return [];
+                const seconds = Number(raw);
+                if (!Number.isFinite(seconds)) return [];
+                return [{ key, label, value: `${Math.round(seconds * 1000)} ms` }];
+            });
+        },
+
+        getPrimarySpanText(span) {
+            if (!span) return '';
+            return span._normalized?.transcript || span._normalized?.output_text || span._normalized?.tool_output || span._normalized?.tool_arguments || '';
         },
 
         // Real-time polling methods

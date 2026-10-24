@@ -31,7 +31,7 @@ def get_os() -> str:
 
 
 def is_enabled() -> bool:
-    env_value = os.environ.get("FINCHVOX_TELEMETRY", "true").lower()
+    env_value = os.environ.get("FINCHVOX_TELEMETRY", "false").lower()
     return env_value not in ("false", "0", "no", "off")
 
 

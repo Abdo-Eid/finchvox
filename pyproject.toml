@@ -1,7 +1,7 @@
 [project]
 name = "finchvox"
 version = "0.0.13"
-description = "Voice AI observability dev tool for Pipecat"
+description = "Local Voice AI session replay and observability for LiveKit Agents and Pipecat"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -18,8 +18,6 @@ dependencies = [
     "python-multipart>=0.0.9",
     "aiofiles>=24.1.0",
     "aiohttp>=3.9.0",
-    "pipecat-ai[cartesia,daily,deepgram,silero]>=0.0.98",
-    "aiortc>=1.14.0",
     "apscheduler>=3.10.0",
 ]
 
@@ -27,6 +25,10 @@ dependencies = [
 finchvox = "finchvox.cli:main"
 
 [project.optional-dependencies]
+pipecat = [
+    "pipecat-ai[cartesia,daily,deepgram,silero]>=0.0.98",
+    "aiortc>=1.14.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.23.0",

@@ -1,81 +1,137 @@
-# Development Guide
+# Development guide
 
+This fork keeps Finchvox's Pipecat support while making the LiveKit Agents path a first-class local session debugger.
 
-## Setup
+## Environment
 
-### Install Pre-commit Hooks
+Python 3.10+ is required. `uv` is recommended.
+
+Install the LiveKit development path:
+
+```bash
+uv sync --extra livekit --extra dev
+```
+
+Install Pipecat support too when working on the original processor integration:
+
+```bash
+uv sync --extra livekit --extra pipecat --extra dev
+```
+
+Install pre-commit hooks:
 
 ```bash
 uv run pre-commit install
 ```
 
-This installs a git hook that runs ruff (linting and formatting) before each commit.
-
-To run manually:
+Run formatting/lint fixes:
 
 ```bash
 uv run scripts/fix-ruff.sh
 ```
 
-
-## Testing
-
-### Run Automated Tests
+## Run the local server
 
 ```bash
-# Run all tests
-pytest tests/
-
-# Run with coverage
-pytest tests/ --cov=finchvox.collector --cov-report=term-missing
-
-# Run specific test file
-pytest tests/test_writer.py -v
+uv run finchvox start --data-dir ./.finchvox-data
 ```
 
-### Manual Testing with otel-cli
+The default bind address is `127.0.0.1`. For a Docker/network integration test, opt in with `--host 0.0.0.0`.
 
-For testing without a Pipecat application:
+UI:
 
-#### Via `otel-cli`
+```text
+http://localhost:3000
+```
+
+OTLP/gRPC:
+
+```text
+localhost:4317
+```
+
+## Tests
+
+Run the full suite when all optional runtimes are installed:
 
 ```bash
-# Install otel-cli (macOS)
-brew install otel-cli
-
-# Send a test span
-otel-cli span --endpoint localhost:4317 --name "test-span" --service "test-service"
-
-# Send multiple spans in same trace (they'll be grouped in one file)
-otel-cli span --endpoint localhost:4317 --name "span-1" --service "test" --traceparent "00-12345678901234567890123456789012-1234567890123456-01"
-otel-cli span --endpoint localhost:4317 --name "span-2" --service "test" --traceparent "00-12345678901234567890123456789012-1234567890123457-01"
+uv run pytest -q
 ```
 
-#### Via test_send_spans.py
+Run the core/LiveKit/UI suite without Pipecat processor tests:
 
 ```bash
-# Run the test script to send sample spans
-python tests/test_send_spans.py
+files=$(find tests -maxdepth 1 -name 'test_*.py' \
+  ! -name 'test_processor.py' -print | sort | tr '\n' ' ')
+PYTHONPATH=src pytest -q $files
 ```
 
-
-### Running Tests
+Useful targeted tests:
 
 ```bash
-# Watch mode (requires pytest-watch)
-pip install pytest-watch
-ptw tests/
+PYTHONPATH=src pytest -q \
+  tests/test_adapters.py \
+  tests/test_conversation_livekit.py \
+  tests/test_livekit_collector.py \
+  tests/test_livekit_helpers.py \
+  tests/test_livekit_report.py \
+  tests/test_metrics.py \
+  tests/test_ui_routes.py
 ```
 
-### Tests failing
+JavaScript syntax checks:
 
 ```bash
-# Ensure dependencies are installed
-uv pip install --system -e ".[dev]"
-
-# Run tests with verbose output
-pytest tests/ -v
-
-# Check Python version (requires 3.10+)
-python --version
+node --check ui/js/session_detail.js
+node --check ui/js/logs_view.js
+node --check ui/js/sessions_list.js
+node --check ui/js/conversation.js
 ```
+
+Python compile check:
+
+```bash
+PYTHONPATH=src python -m compileall -q src tests examples/livekit
+```
+
+## Manual OTLP smoke test
+
+With Finchvox running, `otel-cli` can send a trace without either voice framework:
+
+```bash
+otel-cli span \
+  --endpoint localhost:4317 \
+  --name agent_session \
+  --service livekit-smoke-test
+```
+
+For a realistic LiveKit session, use [`examples/livekit/agent.py`](../examples/livekit/agent.py) and follow [`LIVEKIT_LOCAL_SETUP.md`](LIVEKIT_LOCAL_SETUP.md).
+
+## UI work
+
+The session inspector is intentionally framework-aware rather than a generic OpenTelemetry viewer. The main files are:
+
+```text
+ui/session_detail.html
+ui/css/app.css
+ui/css/local-utilities.css
+ui/js/session_detail.js
+ui/js/conversation.js
+ui/js/logs_view.js
+```
+
+The important interaction invariant is **one shared session clock**. Audio, transcript rows, trace bars, log rows, error markers, tools, and handoffs should all seek/highlight against the same session-relative time.
+
+When changing LiveKit span normalization, add or update tests in `tests/test_adapters.py` and the `test_livekit_*` files. Keep fallbacks for older stored sessions when practical.
+
+## Test fixtures and screenshots
+
+UI smoke screenshots currently live under `docs/`:
+
+```text
+livekit-insights-sessions.png
+livekit-insights-transcript.png
+livekit-insights-trace.png
+```
+
+`VALIDATION.md` records the most recent validation performed for the packaged fork.

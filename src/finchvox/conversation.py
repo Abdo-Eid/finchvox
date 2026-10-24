@@ -52,12 +52,10 @@ class Conversation:
         for attr in attrs:
             if attr.get("key") == key:
                 value = attr.get("value", {})
-                return (
-                    value.get("string_value")
-                    or value.get("bool_value")
-                    or value.get("int_value")
-                    or value.get("double_value")
-                )
+                for value_key in ("string_value", "bool_value", "int_value", "double_value"):
+                    if value_key in value:
+                        return value[value_key]
+                return None
         return None
 
     def _get_parent_turn(self, span: dict) -> dict | None:
@@ -97,7 +95,11 @@ class Conversation:
         turn = self._get_parent_turn(span)
         if not turn:
             return False
-        return bool(self._get_attribute(turn, "turn.was_interrupted"))
+        return bool(
+            self._get_attribute(turn, "turn.was_interrupted")
+            or self._get_attribute(turn, "lk.interrupted")
+            or turn.get("_normalized", {}).get("interrupted")
+        )
 
     def _create_message_from_accumulator(
         self, acc: MessageAccumulator, was_interrupted: bool
@@ -145,9 +147,90 @@ class Conversation:
         self._flush_accumulator(acc, messages, check_interruption)
         return messages
 
+    def _get_descendants(self, parent: dict) -> list[dict]:
+        descendants = []
+        pending = [parent.get("span_id_hex")]
+        while pending:
+            parent_id = pending.pop()
+            if not parent_id:
+                continue
+            children = [
+                span
+                for span in self.spans
+                if span.get("parent_span_id_hex") == parent_id
+            ]
+            descendants.extend(children)
+            pending.extend(child.get("span_id_hex") for child in children)
+        return descendants
+
+    def _text_for_livekit_turn(self, turn: dict, role: str) -> tuple[str, list[str]]:
+        normalized = turn.get("_normalized", {})
+        direct_text = (
+            normalized.get("transcript")
+            if role == "user"
+            else normalized.get("output_text")
+        )
+        if direct_text:
+            return direct_text, [turn.get("span_id_hex")]
+
+        descendants = self._get_descendants(turn)
+        preferred_categories = ("stt",) if role == "user" else ("tts", "llm")
+        for category in preferred_categories:
+            matching = [
+                span
+                for span in descendants
+                if span.get("_normalized", {}).get("category") == category
+            ]
+            texts = [self._get_span_text(span) for span in matching]
+            texts = [text for text in texts if text]
+            if texts:
+                return " ".join(dict.fromkeys(texts)), [
+                    turn.get("span_id_hex"),
+                    *(span.get("span_id_hex") for span in matching),
+                ]
+        return "", [turn.get("span_id_hex")]
+
+    def _build_livekit_turn_messages(self) -> list[Message]:
+        messages = []
+        livekit_turns = [
+            span
+            for span in self.spans
+            if span.get("name") in ("user_turn", "agent_turn")
+        ]
+        for turn in sorted(
+            livekit_turns, key=lambda span: span.get("start_time_unix_nano", 0)
+        ):
+            role = "user" if turn.get("name") == "user_turn" else "assistant"
+            text, span_ids = self._text_for_livekit_turn(turn, role)
+            if not text:
+                continue
+            messages.append(
+                Message(
+                    role=role,
+                    content=text,
+                    timestamp=turn.get("start_time_unix_nano", 0),
+                    was_interrupted=(
+                        role == "assistant"
+                        and bool(turn.get("_normalized", {}).get("interrupted"))
+                    ),
+                    span_ids=[span_id for span_id in span_ids if span_id],
+                )
+            )
+        return messages
+
     def get_messages(self) -> list[Message]:
         if self._messages is not None:
             return self._messages
+
+        if any(
+            span.get("_normalized", {}).get("platform") == "livekit"
+            or span.get("name") in ("user_turn", "agent_turn")
+            for span in self.spans
+        ):
+            livekit_messages = self._build_livekit_turn_messages()
+            if livekit_messages:
+                self._messages = livekit_messages
+                return self._messages
 
         stt_tts_spans = [
             s

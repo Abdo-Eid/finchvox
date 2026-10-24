@@ -426,3 +426,32 @@ class TestMetricsEndpoint:
         assert "p95_ms" in latency_stats
         assert "count" in latency_stats
         assert latency_stats["count"] == 2
+
+
+def test_livekit_agent_turn_e2e_latency_is_exposed():
+    span = {
+        "name": "agent_turn",
+        "span_id_hex": "agent1",
+        "start_time_unix_nano": 1_000_000_000,
+        "attributes": [{"key": "lk.e2e_latency", "value": {"double_value": 1.25}}],
+        "_normalized": {"category": "turn", "e2e_latency_seconds": 1.25},
+    }
+    metrics = Metrics([span]).to_dict()
+    assert metrics["user_bot_latency"] is not None
+    assert metrics["user_bot_latency"]["data_points"][0]["latency_ms"] == 1250
+
+
+def test_livekit_turn_breakdown_is_exposed():
+    span = {
+        "name": "user_turn",
+        "span_id_hex": "user1",
+        "start_time_unix_nano": 1_000_000_000,
+        "_normalized": {
+            "category": "stt",
+            "transcription_delay_seconds": 0.15,
+            "end_of_turn_delay_seconds": 0.25,
+        },
+    }
+    metrics = Metrics([span]).to_dict()
+    assert metrics["turn_breakdown"]["transcription"]["stats"]["avg_ms"] == 150
+    assert metrics["turn_breakdown"]["endpointing"]["stats"]["avg_ms"] == 250

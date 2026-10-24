@@ -1,4 +1,9 @@
 import pytest
+
+# Pipecat is an optional Finchvox integration. Skip this module cleanly for
+# LiveKit-only development installs instead of failing test collection.
+pytest.importorskip("pipecat")
+
 from unittest.mock import Mock, AsyncMock
 from io import StringIO
 

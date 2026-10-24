@@ -1,7 +1,7 @@
 function logsViewMixin() {
     return {
         logCopied: false,
-        selectedView: 'logs',
+        selectedView: 'conversation',
         logs: [],
         selectedLog: null,
         highlightedLogIndex: -1,
@@ -20,7 +20,7 @@ function logsViewMixin() {
 
         initLogsView() {
             const hash = window.location.hash.slice(1);
-            if (hash === 'trace' || hash === 'conversation' || hash === 'metrics') {
+            if (['trace', 'conversation', 'logs', 'metrics', 'environment'].includes(hash)) {
                 this.selectedView = hash;
             }
         },
@@ -72,6 +72,10 @@ function logsViewMixin() {
 
             if (view === 'metrics') {
                 this.loadMetricsIfNeeded();
+            }
+
+            if (view === 'environment') {
+                this.loadEnvironmentIfNeeded();
             }
         },
 
@@ -132,8 +136,10 @@ function logsViewMixin() {
                 }
 
                 if (this.logSearchQuery) {
+                    const needle = this.logSearchQuery.toLowerCase();
                     const body = this.getLogBody(log).toLowerCase();
-                    if (!body.includes(this.logSearchQuery.toLowerCase())) {
+                    const logger = this.getLogLogger(log).toLowerCase();
+                    if (!body.includes(needle) && !logger.includes(needle)) {
                         return false;
                     }
                 }
@@ -180,6 +186,13 @@ function logsViewMixin() {
                 'CRITICAL': 'text-red-400'
             };
             return levelColors[level.toUpperCase()] || 'text-white/70';
+        },
+
+        getLogLogger(log) {
+            if (!log) return '';
+            const loggerAttr = (log.attributes || []).find(attr => attr?.key === 'logger.name');
+            const attrValue = loggerAttr?.value?.string_value;
+            return attrValue || log.instrumentation_scope?.name || log.resource?.attributes?.find(attr => attr?.key === 'service.name')?.value?.string_value || '';
         },
 
         getLogBody(log) {

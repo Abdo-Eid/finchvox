@@ -7,7 +7,17 @@ MAX_WORKERS = 10
 LOG_LEVEL = "INFO"
 
 MAX_AUDIO_FILE_SIZE = 10 * 1024 * 1024
+MAX_FINAL_AUDIO_FILE_SIZE = 512 * 1024 * 1024
 ALLOWED_AUDIO_FORMATS = {".wav", ".mp3", ".ogg", ".flac"}
+ALLOWED_FINAL_AUDIO_FORMATS = {
+    ".wav",
+    ".mp3",
+    ".ogg",
+    ".flac",
+    ".opus",
+    ".webm",
+    ".m4a",
+}
 
 MAX_LOG_BATCH_SIZE = 100
 LOG_FLUSH_INTERVAL = 5.0
