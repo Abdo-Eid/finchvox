@@ -1,11 +1,12 @@
 from loguru import logger
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+    ExportTracePartialSuccess,
+    ExportTraceServiceResponse,
+)
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
     TraceServiceServicer,
 )
-from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
-    ExportTraceServiceResponse,
-    ExportTracePartialSuccess,
-)
+
 from .writer import SpanWriter
 
 
@@ -33,8 +34,8 @@ class TraceCollectorServicer(TraceServiceServicer):
                     rejected_spans=0, error_message=""
                 )
             )
-        except Exception as e:
-            logger.error(f"Error processing spans: {e}", exc_info=True)
+        except Exception as e:  # noqa: BLE001 - gRPC Export boundary: a bad batch must not crash the collector or the exporting agent
+            logger.exception(f"Error processing spans: {e}")
             # Continue processing - return partial success
             return ExportTraceServiceResponse(
                 partial_success=ExportTracePartialSuccess(

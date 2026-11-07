@@ -49,7 +49,7 @@ CATEGORY_MAP = {
 
 
 def make_span(
-    name: str, start_nano: int, ttfb_seconds: float = None, span_id: str = "abc123"
+    name: str, start_nano: int, ttfb_seconds: float | None = None, span_id: str = "abc123"
 ):
     span = {
         "name": name,
@@ -75,7 +75,7 @@ def make_span(
 
 
 def make_turn_span(
-    start_nano: int, latency_seconds: float = None, span_id: str = "turn123"
+    start_nano: int, latency_seconds: float | None = None, span_id: str = "turn123"
 ):
     span = {
         "name": "turn",

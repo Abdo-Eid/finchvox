@@ -1,10 +1,10 @@
 import pytest
 
 from finchvox.adapters import (
+    LiveKitAdapter,
+    PipecatAdapter,
     detect_platform,
     get_adapter,
-    PipecatAdapter,
-    LiveKitAdapter,
 )
 
 
@@ -208,16 +208,18 @@ class TestLiveKitAdapter:
         config = adapter.get_span_config("agent_speaking")
         assert config.category == "tts"
 
-    def test_get_transcript_lk_transcript(self, adapter):
+    def test_get_transcript_user_transcript(self, adapter):
         span = {
-            "attributes": [{"key": "lk.transcript", "value": {"string_value": "Hello"}}]
+            "attributes": [
+                {"key": "lk.pii.user_transcript", "value": {"string_value": "Hello"}}
+            ]
         }
         assert adapter.get_transcript(span) == "Hello"
 
-    def test_get_transcript_lk_user_text(self, adapter):
+    def test_get_transcript_user_input(self, adapter):
         span = {
             "attributes": [
-                {"key": "lk.user_text", "value": {"string_value": "User said"}}
+                {"key": "lk.pii.user_input", "value": {"string_value": "User said"}}
             ]
         }
         assert adapter.get_transcript(span) == "User said"
@@ -225,14 +227,24 @@ class TestLiveKitAdapter:
     def test_get_output_text_lk_response(self, adapter):
         span = {
             "attributes": [
-                {"key": "lk.response.text", "value": {"string_value": "Response"}}
+                {"key": "lk.pii.response.text", "value": {"string_value": "Response"}}
             ]
         }
         assert adapter.get_output_text(span) == "Response"
 
-    def test_get_ttfb_lk(self, adapter):
-        span = {"attributes": [{"key": "lk.ttfb", "value": {"double_value": 0.123}}]}
-        assert adapter.get_ttfb(span) == 0.123
+    def test_attribute_names_from_before_1_8_are_not_read(self, adapter):
+        """LiveKit support starts at 1.8.9, which only writes the lk.pii.* names."""
+        span = {
+            "name": "llm_request",
+            "attributes": [
+                {"key": "lk.transcript", "value": {"string_value": "old"}},
+                {"key": "lk.response.text", "value": {"string_value": "old"}},
+                {"key": "lk.ttfb", "value": {"double_value": 0.123}},
+            ],
+        }
+        assert adapter.get_transcript(span) is None
+        assert adapter.get_output_text(span) is None
+        assert adapter.get_ttfb(span) is None
 
     def test_get_turn_span_names(self, adapter):
         assert adapter.get_turn_span_names() == ["user_turn", "agent_turn"]
@@ -242,8 +254,8 @@ class TestLiveKitAdapter:
             "name": "llm_node",
             "span_id_hex": "xyz789",
             "attributes": [
-                {"key": "lk.response.text", "value": {"string_value": "AI response"}},
-                {"key": "lk.ttfb", "value": {"double_value": 0.3}},
+                {"key": "lk.pii.response.text", "value": {"string_value": "AI response"}},
+                {"key": "lk.response.ttft", "value": {"double_value": 0.3}},
             ],
         }
         normalized = adapter.normalize_span(span)
@@ -344,6 +356,35 @@ class TestLiveKitCurrentTelemetry:
         }
         assert adapter.get_ttfb(span) == 0.222
 
+    def test_released_189_genai_multipart_response_and_tool_attributes(self, adapter):
+        import json
+
+        response = {
+            "name": "llm_request",
+            "attributes": [{
+                "key": "gen_ai.output.messages",
+                "value": {"string_value": json.dumps([{
+                    "role": "assistant",
+                    "parts": [{"type": "text", "content": "Hello from the released SDK"}],
+                    "finish_reason": "stop",
+                }])},
+            }],
+        }
+        tool = {
+            "name": "function_tool",
+            "attributes": [
+                {"key": "gen_ai.tool.name", "value": {"string_value": "lookup"}},
+                {"key": "gen_ai.tool.call.id", "value": {"string_value": "call-1"}},
+                {"key": "gen_ai.tool.call.arguments", "value": {"string_value": '{"id":42}'}},
+                {"key": "gen_ai.tool.call.result", "value": {"string_value": "found"}},
+            ],
+        }
+        assert adapter.get_output_text(response) == "Hello from the released SDK"
+        normalized = adapter.normalize_span(tool)["_normalized"]
+        assert normalized["tool_name"] == "lookup"
+        assert normalized["tool_arguments"] == '{"id":42}'
+        assert normalized["tool_output"] == "found"
+
     def test_tool_and_handoff_normalization(self, adapter):
         tool = adapter.normalize_span(
             {
@@ -436,3 +477,118 @@ def test_livekit_18_normalization_keeps_session_turn_and_genai_fields():
     assert normalized["input_tokens"] == 123
     assert normalized["output_tokens"] == 45
     assert normalized["transcript_confidence"] == 0.98
+
+
+class TestLiveKit18SpanCoverage:
+    """Span names created by livekit-agents 1.8.11 (read from its source)."""
+
+    @pytest.fixture
+    def adapter(self):
+        return LiveKitAdapter()
+
+    @pytest.mark.parametrize(
+        ("span_name", "display_name", "category"),
+        [
+            ("eou_detection", "EOU_DETECTION", "stt"),
+            ("llm_fallback_adapter", "LLM_FALLBACK", "other"),
+            ("tts_fallback_adapter", "TTS_FALLBACK", "other"),
+            ("tts_stream_adapter", "TTS_STREAM_ADAPTER", "other"),
+            ("amd", "ANSWERING_MACHINE_DETECTION", "other"),
+            ("wait_for_audio_track", "WAIT_FOR_AUDIO_TRACK", "transport"),
+            ("event_loop_blocked", "EVENT_LOOP_BLOCKED", "other"),
+        ],
+    )
+    def test_current_spans_have_their_own_lane(
+        self, adapter, span_name, display_name, category
+    ):
+        config = adapter.get_span_config(span_name)
+        assert config.display_name == display_name
+        assert config.category == category
+        assert config.hidden is False
+
+    def test_blocked_event_loop_is_drawn_as_an_error_bar(self, adapter):
+        assert adapter.get_span_config("event_loop_blocked").css_class == "bar-error"
+
+    def test_fallback_adapters_do_not_add_duplicate_latency_points(self, adapter):
+        """Only the request spans carry latency; the adapter wrapper is a parent."""
+        for name in ("llm_fallback_adapter", "tts_fallback_adapter"):
+            assert adapter.get_span_config(name).category == "other"
+
+    @pytest.mark.parametrize(
+        "span_name",
+        ["job_entrypoint", "session_close", "on_enter", "start_agent_activity", "rpc_call"],
+    )
+    def test_lifecycle_spans_are_hidden_from_the_timeline(self, adapter, span_name):
+        normalized = adapter.normalize_span({"name": span_name, "attributes": []})[
+            "_normalized"
+        ]
+        assert normalized["category"] == "lifecycle"
+        assert normalized["hidden"] is True
+
+    def test_failing_lifecycle_span_stays_visible(self, adapter):
+        span = {
+            "name": "on_enter",
+            "status": {"code": "STATUS_CODE_ERROR", "message": "boom"},
+            "attributes": [],
+        }
+        normalized = adapter.normalize_span(span)["_normalized"]
+        assert normalized["is_error"] is True
+        assert normalized["hidden"] is False
+
+    def test_lifecycle_names_do_not_identify_a_trace_as_livekit(self):
+        assert detect_platform([{"name": "on_enter", "attributes": []}]) == "pipecat"
+        assert detect_platform([{"name": "rpc_call", "attributes": []}]) == "pipecat"
+
+    def test_removed_names_are_not_livekit_spans(self):
+        for name in ("stt_node", "stt_request", "execute_tool", "room_io"):
+            assert detect_platform([{"name": name, "attributes": []}]) == "pipecat"
+
+    def test_event_loop_block_details_are_normalized(self, adapter):
+        span = adapter.normalize_span(
+            {
+                "name": "event_loop_blocked",
+                "attributes": [
+                    {"key": "lk.blocking.duration", "value": {"double_value": 0.82}},
+                    {"key": "lk.blocking.severity", "value": {"string_value": "error"}},
+                    {"key": "lk.blocking.task", "value": {"string_value": "stt_task"}},
+                ],
+            }
+        )["_normalized"]
+        assert span["blocking_duration_seconds"] == 0.82
+        assert span["blocking_severity"] == "error"
+        assert span["blocking_task"] == "stt_task"
+
+    def test_job_dispatch_latencies_are_normalized(self, adapter):
+        span = adapter.normalize_span(
+            {
+                "name": "job_entrypoint",
+                "attributes": [
+                    {"key": "lk.job.accept_latency", "value": {"double_value": 0.01}},
+                    {"key": "lk.job.dispatch_latency", "value": {"double_value": 0.42}},
+                ],
+            }
+        )["_normalized"]
+        assert span["job_accept_latency_seconds"] == 0.01
+        assert span["job_dispatch_latency_seconds"] == 0.42
+        assert span["job_launch_latency_seconds"] is None
+
+    def test_fallback_and_interruption_details_are_normalized(self, adapter):
+        span = adapter.normalize_span(
+            {
+                "name": "tts_fallback_adapter",
+                "attributes": [
+                    {"key": "lk.fallback.label", "value": {"string_value": "xai/tts-1"}},
+                    {"key": "lk.fallback.index", "value": {"int_value": 1}},
+                    {"key": "lk.fallback.recovery", "value": {"bool_value": True}},
+                    {"key": "lk.tts.label", "value": {"string_value": "inworld"}},
+                    {"key": "lk.is_interruption", "value": {"bool_value": False}},
+                    {"key": "lk.interruption.probability", "value": {"double_value": 0.9}},
+                ],
+            }
+        )["_normalized"]
+        assert span["fallback_label"] == "xai/tts-1"
+        assert span["fallback_index"] == 1
+        assert span["fallback_recovery"] is True
+        assert span["tts_label"] == "inworld"
+        assert span["is_interruption"] is False
+        assert span["interruption_probability"] == 0.9

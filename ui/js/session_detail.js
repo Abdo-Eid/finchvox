@@ -50,7 +50,9 @@ function sessionDetailApp() {
         isPanelOpen: false,      // Controls panel visibility and transitions
 
         // Audio state
-        wavesurfer: null,
+        audioPlayer: null,
+        // A getter's result is made reactive by Alpine, even with a frozen holder.
+        getAudioPlayer() { return this.audioPlayer?.instance ?? null; },
         playing: false,
         currentTime: 0,
         duration: 0,
@@ -429,11 +431,11 @@ function sessionDetailApp() {
 
         initAudioPlayer() {
             // Only initialize if not already created
-            if (this.wavesurfer) {
+            if (this.getAudioPlayer()) {
                 return;
             }
 
-            this.wavesurfer = WaveSurfer.create({
+            const player = WaveSurfer.create({
                 container: '#waveform',
                 waveColor: '#a855f7',      // Purple (fallback)
                 progressColor: '#7c3aed',  // Darker purple (fallback)
@@ -455,18 +457,15 @@ function sessionDetailApp() {
                     }
                 ]
             });
-
-            this.wavesurfer.load(`/api/sessions/${this.sessionId}/audio`);
+            // Native player state/signals must not be wrapped in Alpine's proxies.
+            this.audioPlayer = Object.freeze({ instance: player });
 
             // Event listeners
-            this.wavesurfer.on('play', () => { this.playing = true; });
-            this.wavesurfer.on('pause', () => { this.playing = false; });
-            this.wavesurfer.on('audioprocess', (time) => { this.currentTime = time; });
-            this.wavesurfer.on('seek', (progress) => {
-                this.currentTime = progress * this.duration;
-            });
-            this.wavesurfer.on('ready', () => {
-                this.duration = this.wavesurfer.getDuration();
+            player.on('play', () => { this.playing = true; });
+            player.on('pause', () => { this.playing = false; });
+            player.on('timeupdate', (time) => { this.currentTime = time; });
+            player.on('ready', () => {
+                this.duration = player.getDuration();
                 console.log('Audio ready, duration:', this.duration);
 
                 // Clear error state when audio loads successfully
@@ -481,10 +480,24 @@ function sessionDetailApp() {
                 // Setup hover marker listeners
                 this.initWaveformHover();
             });
-            this.wavesurfer.on('error', (error) => {
+            player.on('error', (error) => {
                 console.error('Audio loading error:', error);
                 this.audioError = true;
             });
+            this.loadAudio(`/api/sessions/${this.sessionId}/audio`);
+        },
+
+        async loadAudio(url) {
+            const player = this.getAudioPlayer();
+            if (!player) return;
+            try {
+                await player.load(url);
+            } catch (error) {
+                // V8 rejects superseded loads and loads aborted during teardown.
+                if (error.name !== 'AbortError' && this.getAudioPlayer() === player) {
+                    this.audioError = true;
+                }
+            }
         },
 
         generateTimeline() {
@@ -554,29 +567,35 @@ function sessionDetailApp() {
         },
 
         togglePlay() {
-            if (this.wavesurfer) {
-                this.wavesurfer.playPause();
+            const player = this.getAudioPlayer();
+            if (player) {
+                player.playPause().catch(error => {
+                    console.error('Audio playback error:', error);
+                    if (this.getAudioPlayer() === player) this.playing = false;
+                });
             }
         },
 
         skipBackward(seconds) {
-            if (!this.wavesurfer || !this.duration) return;
+            const player = this.getAudioPlayer();
+            if (!player || !this.duration) return;
 
-            const currentTime = this.wavesurfer.getCurrentTime();
+            const currentTime = player.getCurrentTime();
             const newTime = Math.max(0, currentTime - seconds);
             const progress = newTime / this.duration;
 
-            this.wavesurfer.seekTo(progress);
+            player.seekTo(progress);
         },
 
         skipForward(seconds) {
-            if (!this.wavesurfer || !this.duration) return;
+            const player = this.getAudioPlayer();
+            if (!player || !this.duration) return;
 
-            const currentTime = this.wavesurfer.getCurrentTime();
+            const currentTime = player.getCurrentTime();
             const newTime = Math.min(this.duration, currentTime + seconds);
             const progress = newTime / this.duration;
 
-            this.wavesurfer.seekTo(progress);
+            player.seekTo(progress);
         },
 
         isUserTyping() {
@@ -620,12 +639,33 @@ function sessionDetailApp() {
         },
 
         initCleanup() {
-            // Stop polling when user navigates away
-            window.addEventListener('beforeunload', () => {
-                if (this.isPolling) {
+            if (this.pageHideHandler) return;
+            this.pageHideHandler = (event) => {
+                if (event.persisted) {
                     this.stopPolling();
+                    this.getAudioPlayer()?.pause();
+                } else {
+                    this.destroy();
                 }
-            });
+            };
+            window.addEventListener('pagehide', this.pageHideHandler);
+        },
+
+        destroy() {
+            this.stopPolling();
+            document.removeEventListener('keydown', this.keyboardHandler);
+            window.removeEventListener('pagehide', this.pageHideHandler);
+            this.keyboardHandler = null;
+            this.pageHideHandler = null;
+            this.waveformHoverEvents?.abort();
+            this.waveformHoverEvents = null;
+            const player = this.getAudioPlayer();
+            this.audioPlayer = null;
+            player?.destroy();
+            this.destroyMetricsCharts();
+            this.playing = false;
+            this.currentTime = 0;
+            this.duration = 0;
         },
 
         navigateSpan(direction) {
@@ -678,12 +718,13 @@ function sessionDetailApp() {
             this.showMarkerAtSpan(span);
 
             // Seek audio to span start time if audio is not playing
-            if (this.wavesurfer && this.duration) {
-                const isPlaying = this.wavesurfer.isPlaying();
+            const player = this.getAudioPlayer();
+            if (player && this.duration) {
+                const isPlaying = player.isPlaying();
                 if (!isPlaying) {
                     const audioTime = (span.startMs - this.minTime) / 1000;
                     const progress = audioTime / this.duration;
-                    this.wavesurfer.seekTo(progress);
+                    player.seekTo(progress);
                     // Update currentTime directly for immediate UI feedback
                     this.currentTime = audioTime;
                 }
@@ -1108,6 +1149,9 @@ function sessionDetailApp() {
         initWaveformHover() {
             const waveformContainer = document.getElementById('waveform');
             if (!waveformContainer) return;
+            this.waveformHoverEvents?.abort();
+            this.waveformHoverEvents = new AbortController();
+            const options = { signal: this.waveformHoverEvents.signal };
 
             waveformContainer.addEventListener('mousemove', (e) => {
                 const rect = waveformContainer.getBoundingClientRect();
@@ -1118,13 +1162,13 @@ function sessionDetailApp() {
                 this.hoverMarker.time = time;
                 this.hoverMarker.source = 'waveform';
                 this.hoverMarker.visible = true;
-            });
+            }, options);
 
             waveformContainer.addEventListener('mouseleave', () => {
                 if (this.hoverMarker.source === 'waveform') {
                     this.hoverMarker.visible = false;
                 }
-            });
+            }, options);
         },
 
         // Show hover marker at span start time (called from waterfall row hover)
@@ -1451,7 +1495,10 @@ function sessionDetailApp() {
                 'lk.agent_label', 'lk.previous_agent_label', 'lk.agent_name', 'lk.generation_id', 'lk.parent_generation_id', 'lk.generation_count', 'lk.speech_id',
                 'lk.transcript_confidence', 'lk.eou.probability', 'lk.eou.outcome', 'lk.eou.source', 'lk.eou.detection_delay',
                 'lk.pii.room_name', 'room_id', 'job_id', 'lk.room_sid', 'lk.job_id', 'lk.participant_id', 'lk.pii.participant_identity',
-                'lk.provider_request_ids', 'lk.retry_count', 'lk.fallback.label', 'lk.fallback.index',
+                'lk.provider_request_ids', 'lk.retry_count', 'lk.fallback.label', 'lk.fallback.index', 'lk.fallback.recovery', 'lk.tts.label',
+                'lk.eou.language', 'lk.eou.from_cache', 'lk.eou.wait_duration', 'lk.eou.rearm_count', 'lk.is_interruption', 'lk.interruption.probability',
+                'lk.blocking.duration', 'lk.blocking.severity', 'lk.blocking.task', 'lk.blocking.gc_time', 'lk.blocking.cpu_time',
+                'lk.job.dispatch_latency', 'lk.dispatch_id', 'lk.close_reason', 'lk.disconnect_reason', 'lk.amd.category', 'lk.amd.reason',
                 'gen_ai.tool.name', 'gen_ai.tool.call.id', 'lk.function_tool.name', 'lk.function_tool.is_error',
                 'error.type'
             ];
@@ -1561,11 +1608,12 @@ function sessionDetailApp() {
         },
 
         async reloadAudioIfNotPlaying() {
-            if (this.wavesurfer && !this.wavesurfer.isPlaying()) {
+            const player = this.getAudioPlayer();
+            if (player && !player.isPlaying()) {
                 console.log('Reloading audio waveform (synchronized with spans)');
                 const audioUrl = `/api/sessions/${this.sessionId}/audio?t=${Date.now()}`;
-                this.wavesurfer.load(audioUrl);
-            } else if (this.wavesurfer) {
+                await this.loadAudio(audioUrl);
+            } else if (player) {
                 console.log('Audio is playing, skipping reload');
             }
         },

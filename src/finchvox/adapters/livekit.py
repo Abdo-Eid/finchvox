@@ -1,36 +1,71 @@
 import json
-from typing import Any, Optional
+from typing import Any
 
 from finchvox.adapters.base import BaseTraceAdapter, SpanTypeConfig
 
+# Span names created by livekit-agents 1.8.x (checked against the 1.8.11 source).
+# LiveKit support starts at 1.8.9, so older span and attribute names are not kept.
+_LIFECYCLE_SPANS = (
+    "job_entrypoint",
+    "job_shutdown",
+    "shutdown_callback",
+    "session_close",
+    "session_end_upload",
+    "on_session_end",
+    "on_enter",
+    "on_exit",
+    "on_user_turn_completed",
+    "start_agent_activity",
+    "pause_agent_activity",
+    "resume_agent_activity",
+    "drain_agent_activity",
+    "room_disconnect",
+    "rpc_call",
+    "rpc_handler",
+)
 
-# LiveKit Agents has evolved its OpenTelemetry model a few times. Keep the old
-# names because Finchvox sessions are often replayed long after capture, while
-# also recognizing the current 1.7/1.8 span names and GenAI semantic conventions.
 SPAN_CONFIGS = {
     "agent_session": SpanTypeConfig("AGENT_SESSION", "root", "bar-conversation", 1),
     "session_start": SpanTypeConfig("SESSION_START", "root", "bar-conversation", 1),
     "agent_turn": SpanTypeConfig("AGENT_TURN", "turn", "bar-turn", 2),
     "tts_request": SpanTypeConfig("TTS", "tts", "bar-tts", 3),
+    "tts_fallback_adapter": SpanTypeConfig("TTS_FALLBACK", "other", "bar-default", 3),
+    "tts_stream_adapter": SpanTypeConfig("TTS_STREAM_ADAPTER", "other", "bar-default", 3),
     "agent_speaking": SpanTypeConfig("AGENT_SPEAKING", "tts", "bar-tts", 4),
     "tts_node": SpanTypeConfig("TTS_NODE", "tts", "bar-tts", 4, hidden=True),
     "tts_request_run": SpanTypeConfig("TTS_REQUEST_RUN", "tts", "bar-tts", 6, hidden=True),
     "user_turn": SpanTypeConfig("USER_TURN", "stt", "bar-stt", 7),
     "user_speaking": SpanTypeConfig("USER_SPEAKING", "stt", "bar-stt", 8),
-    "stt_node": SpanTypeConfig("STT", "stt", "bar-stt", 8),
-    "stt_request": SpanTypeConfig("STT_REQUEST", "stt", "bar-stt", 8),
     "eou_wait": SpanTypeConfig("END_OF_UTTERANCE", "stt", "bar-stt", 8),
+    "eou_detection": SpanTypeConfig("EOU_DETECTION", "stt", "bar-stt", 8),
     "keyterm_detection": SpanTypeConfig("KEYTERM_DETECTION", "stt", "bar-stt", 8),
     "llm_node": SpanTypeConfig("LLM_NODE", "llm", "bar-llm", 9, hidden=True),
     "realtime_inference": SpanTypeConfig("REALTIME_INFERENCE", "llm", "bar-llm", 9),
     "llm_request": SpanTypeConfig("LLM", "llm", "bar-llm", 10),
+    "llm_fallback_adapter": SpanTypeConfig("LLM_FALLBACK", "other", "bar-default", 10),
     "llm_request_run": SpanTypeConfig("LLM_REQUEST_RUN", "llm", "bar-llm", 11, hidden=True),
     "function_tool": SpanTypeConfig("TOOL", "tool", "bar-tool", 12),
-    "execute_tool": SpanTypeConfig("TOOL", "tool", "bar-tool", 12),
     "update_agent": SpanTypeConfig("AGENT_HANDOFF", "handoff", "bar-handoff", 13),
+    "amd": SpanTypeConfig("ANSWERING_MACHINE_DETECTION", "other", "bar-default", 14),
     "room_connect": SpanTypeConfig("ROOM_CONNECT", "transport", "bar-transport", 20),
-    "room_io": SpanTypeConfig("ROOM_IO", "transport", "bar-transport", 20),
+    "wait_for_audio_track": SpanTypeConfig(
+        "WAIT_FOR_AUDIO_TRACK", "transport", "bar-transport", 20
+    ),
+    # Red bar: an event loop blocked for this long is the usual cause of a latency spike.
+    "event_loop_blocked": SpanTypeConfig("EVENT_LOOP_BLOCKED", "other", "bar-error", 21),
+    **{
+        name: SpanTypeConfig(name.upper(), "lifecycle", "bar-default", 30, hidden=True)
+        for name in _LIFECYCLE_SPANS
+    },
 }
+
+# Span names that identify a trace as LiveKit's. Lifecycle names such as ``on_enter``
+# are generic enough to appear in other frameworks, so they do not count.
+JOB_LATENCY_STAGES = ("accept", "assignment", "launch", "entrypoint", "dispatch")
+
+LIVEKIT_SPAN_NAMES = frozenset(
+    name for name, config in SPAN_CONFIGS.items() if config.category != "lifecycle"
+)
 
 DEFAULT_CONFIG = SpanTypeConfig("OTHER", "other", "bar-default")
 
@@ -50,7 +85,7 @@ class LiveKitAdapter(BaseTraceAdapter):
         )
 
     @staticmethod
-    def _coerce_text(value: Any) -> Optional[str]:
+    def _coerce_text(value: Any) -> str | None:
         if value is None:
             return None
         if isinstance(value, str):
@@ -60,7 +95,7 @@ class LiveKitAdapter(BaseTraceAdapter):
         return None
 
     @staticmethod
-    def _extract_text_from_json(value: Any) -> Optional[str]:
+    def _extract_text_from_json(value: Any) -> str | None:
         """Best-effort extraction from GenAI messages/chat context JSON."""
         if value is None:
             return None
@@ -92,19 +127,12 @@ class LiveKitAdapter(BaseTraceAdapter):
         # De-duplicate values caused by nested wrappers while keeping order.
         return "\n".join(dict.fromkeys(texts))
 
-    def get_transcript(self, span: dict) -> Optional[str]:
+    def get_transcript(self, span: dict) -> str | None:
         value = self._first_attribute(
             span,
-            # LiveKit Agents 1.7+ PII names.
             "lk.pii.user_transcript",
             "lk.pii.user_input",
             "lk.pii.amd.transcript",
-            # Older LiveKit names retained for stored traces.
-            "lk.user_transcript",
-            "lk.transcript",
-            "lk.user_input",
-            "lk.user_text",
-            "transcript",
         )
         text = self._coerce_text(value)
         if text:
@@ -114,32 +142,20 @@ class LiveKitAdapter(BaseTraceAdapter):
             self._first_attribute(span, "gen_ai.input.messages")
         )
 
-    def get_output_text(self, span: dict) -> Optional[str]:
-        value = self._first_attribute(
-            span,
-            "lk.pii.response.text",
-            "lk.response.text",
-            "lk.pii.input_text",
-            "lk.input_text",
-            "output",
-            "text",
-        )
+    def get_output_text(self, span: dict) -> str | None:
+        value = self._first_attribute(span, "lk.pii.response.text", "lk.pii.input_text")
         text = self._coerce_text(value)
         if text:
             return text
 
-        for key in (
-            "gen_ai.output.messages",
-            "lk.pii.chat_ctx",
-            "lk.chat_ctx",
-        ):
+        for key in ("gen_ai.output.messages", "lk.pii.chat_ctx"):
             text = self._extract_text_from_json(self._get_attribute(span, key))
             if text:
                 return text
         return None
 
     @staticmethod
-    def _as_float(value: Any) -> Optional[float]:
+    def _as_float(value: Any) -> float | None:
         if value is None or isinstance(value, bool):
             return None
         try:
@@ -147,7 +163,7 @@ class LiveKitAdapter(BaseTraceAdapter):
         except (TypeError, ValueError):
             return None
 
-    def _metric_from_json(self, span: dict, attribute: str, *keys: str) -> Optional[float]:
+    def _metric_from_json(self, span: dict, attribute: str, *keys: str) -> float | None:
         metrics_json = self._get_attribute(span, attribute)
         if metrics_json is None:
             return None
@@ -163,7 +179,7 @@ class LiveKitAdapter(BaseTraceAdapter):
                 return value
         return None
 
-    def get_ttfb(self, span: dict) -> Optional[float]:
+    def get_ttfb(self, span: dict) -> float | None:
         span_name = span.get("name", "")
         category = self.get_span_config(span_name).category
 
@@ -192,14 +208,8 @@ class LiveKitAdapter(BaseTraceAdapter):
                 return parsed
 
         if category == "stt" or span_name in ("user_turn", "user_speaking"):
-            parsed = self._as_float(self._get_attribute(span, "lk.transcription_delay"))
-            if parsed is not None:
-                return parsed
+            return self._as_float(self._get_attribute(span, "lk.transcription_delay"))
 
-        for key in ("lk.ttfb", "metrics.ttfb"):
-            parsed = self._as_float(self._get_attribute(span, key))
-            if parsed is not None:
-                return parsed
         return None
 
     def _is_error(self, span: dict) -> bool:
@@ -216,7 +226,7 @@ class LiveKitAdapter(BaseTraceAdapter):
             {
                 "event_kind": (
                     "tool"
-                    if span_name in ("function_tool", "execute_tool")
+                    if span_name == "function_tool"
                     else "handoff"
                     if span_name == "update_agent"
                     else "span"
@@ -229,10 +239,10 @@ class LiveKitAdapter(BaseTraceAdapter):
                     span, "gen_ai.tool.call.id", "lk.function_tool.id"
                 ),
                 "tool_arguments": self._first_attribute(
-                    span, "gen_ai.tool.call.arguments", "lk.pii.function_tool.arguments", "lk.function_tool.arguments"
+                    span, "gen_ai.tool.call.arguments", "lk.pii.function_tool.arguments"
                 ),
                 "tool_output": self._first_attribute(
-                    span, "gen_ai.tool.call.result", "lk.pii.function_tool.output", "lk.function_tool.output"
+                    span, "gen_ai.tool.call.result", "lk.pii.function_tool.output"
                 ),
                 "agent_label": self._first_attribute(
                     span, "lk.agent_label", "gen_ai.agent.name"
@@ -243,8 +253,8 @@ class LiveKitAdapter(BaseTraceAdapter):
                 "generation_count": self._get_attribute(span, "lk.generation_count"),
                 "speech_id": self._get_attribute(span, "lk.speech_id"),
                 "agent_name": self._get_attribute(span, "lk.agent_name"),
-                "room_name": self._first_attribute(span, "lk.pii.room_name", "lk.room_name"),
-                "room_sid": self._first_attribute(span, "room_id", "lk.room_sid", "lk.room_id"),
+                "room_name": self._get_attribute(span, "lk.pii.room_name"),
+                "room_sid": self._first_attribute(span, "room_id", "lk.room_sid"),
                 "job_id": self._first_attribute(span, "job_id", "lk.job_id"),
                 "participant_id": self._get_attribute(span, "lk.participant_id"),
                 "participant_identity": self._get_attribute(span, "lk.pii.participant_identity"),
@@ -252,7 +262,7 @@ class LiveKitAdapter(BaseTraceAdapter):
                 "cloud_agent_id": self._get_attribute(span, "lk.cloud_agent_id"),
                 "deployment_id": self._get_attribute(span, "lk.deployment_id"),
                 "provider_request_ids": self._get_attribute(span, "lk.provider_request_ids"),
-                "provider": self._first_attribute(span, "gen_ai.provider.name", "gen_ai.system"),
+                "provider": self._get_attribute(span, "gen_ai.provider.name"),
                 "request_model": self._get_attribute(span, "gen_ai.request.model"),
                 "response_model": self._get_attribute(span, "gen_ai.response.model"),
                 "input_tokens": self._get_attribute(span, "gen_ai.usage.input_tokens"),
@@ -269,6 +279,23 @@ class LiveKitAdapter(BaseTraceAdapter):
                 "eou_source": self._get_attribute(span, "lk.eou.source"),
                 "fallback_label": self._get_attribute(span, "lk.fallback.label"),
                 "fallback_index": self._get_attribute(span, "lk.fallback.index"),
+                "fallback_recovery": self._get_attribute(span, "lk.fallback.recovery"),
+                "tts_label": self._get_attribute(span, "lk.tts.label"),
+                "is_interruption": self._get_attribute(span, "lk.is_interruption"),
+                "interruption_probability": self._as_float(
+                    self._get_attribute(span, "lk.interruption.probability")
+                ),
+                "blocking_duration_seconds": self._as_float(
+                    self._get_attribute(span, "lk.blocking.duration")
+                ),
+                "blocking_severity": self._get_attribute(span, "lk.blocking.severity"),
+                "blocking_task": self._get_attribute(span, "lk.blocking.task"),
+                **{
+                    f"job_{name}_latency_seconds": self._as_float(
+                        self._get_attribute(span, f"lk.job.{name}_latency")
+                    )
+                    for name in JOB_LATENCY_STAGES
+                },
                 "e2e_latency_seconds": self._as_float(self._get_attribute(span, "lk.e2e_latency")),
                 "transcription_delay_seconds": self._as_float(self._get_attribute(span, "lk.transcription_delay")),
                 "end_of_turn_delay_seconds": self._as_float(self._get_attribute(span, "lk.end_of_turn_delay")),
@@ -279,6 +306,10 @@ class LiveKitAdapter(BaseTraceAdapter):
             }
         )
         normalized["is_error"] = self._is_error(span)
+        if normalized["is_error"] and normalized.get("category") == "lifecycle":
+            # Lifecycle spans are hidden to keep the timeline readable, but a failing
+            # ``on_enter`` or shutdown callback must stay visible.
+            normalized["hidden"] = False
         return span
 
     def get_turn_span_names(self) -> list[str]:

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -22,15 +22,15 @@ class BaseTraceAdapter(ABC):
         pass
 
     @abstractmethod
-    def get_transcript(self, span: dict) -> Optional[str]:
+    def get_transcript(self, span: dict) -> str | None:
         pass
 
     @abstractmethod
-    def get_output_text(self, span: dict) -> Optional[str]:
+    def get_output_text(self, span: dict) -> str | None:
         pass
 
     @abstractmethod
-    def get_ttfb(self, span: dict) -> Optional[float]:
+    def get_ttfb(self, span: dict) -> float | None:
         pass
 
     @abstractmethod
@@ -87,7 +87,7 @@ class BaseTraceAdapter(ABC):
                 return True
         return False
 
-    def _error_message(self, span: dict) -> Optional[str]:
+    def _error_message(self, span: dict) -> str | None:
         status = span.get("status") or {}
         if status.get("message"):
             return str(status["message"])

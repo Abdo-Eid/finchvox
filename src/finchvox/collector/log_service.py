@@ -1,11 +1,12 @@
 from loguru import logger
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
+    ExportLogsPartialSuccess,
+    ExportLogsServiceResponse,
+)
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import (
     LogsServiceServicer,
 )
-from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
-    ExportLogsServiceResponse,
-    ExportLogsPartialSuccess,
-)
+
 from .log_writer import LogWriter
 
 
@@ -31,8 +32,8 @@ class LogCollectorServicer(LogsServiceServicer):
                     rejected_log_records=0, error_message=""
                 )
             )
-        except Exception as e:
-            logger.error(f"Error processing logs: {e}", exc_info=True)
+        except Exception as e:  # noqa: BLE001 - gRPC Export boundary: a bad batch must not crash the collector or the exporting agent
+            logger.exception(f"Error processing logs: {e}")
             return ExportLogsServiceResponse(
                 partial_success=ExportLogsPartialSuccess(
                     rejected_log_records=0, error_message=str(e)

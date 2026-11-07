@@ -75,10 +75,14 @@ class Metrics:
     CATEGORIES = ("stt", "llm", "tts")
 
     def __init__(
-        self, spans: list[dict], report_messages: list[dict] | None = None
+        self,
+        spans: list[dict],
+        report_messages: list[dict] | None = None,
+        usage: list[dict] | None = None,
     ):
         self.spans = spans
         self.report_messages = report_messages or []
+        self.usage = usage or []
         self._session_start_ms: float | None = None
         self._ttfb_series: dict[str, TTFBSeries] | None = None
         self._user_bot_latency_series: UserBotLatencySeries | None = None
@@ -361,6 +365,43 @@ class Metrics:
                 }
         return result
 
+    def get_event_loop_blocks(self) -> list[dict]:
+        """Moments the agent's event loop was blocked, a common cause of latency spikes."""
+        blocks = []
+        for span in self.spans:
+            if span.get("name") != "event_loop_blocked":
+                continue
+            normalized = span.get("_normalized", {})
+            duration = normalized.get("blocking_duration_seconds")
+            if duration is None:
+                continue
+            timestamp_ms = int(span.get("start_time_unix_nano", 0)) / 1_000_000
+            blocks.append(
+                {
+                    "timestamp_ms": timestamp_ms,
+                    "relative_time_ms": timestamp_ms - self.session_start_ms,
+                    "duration_ms": duration * 1000,
+                    "severity": normalized.get("blocking_severity"),
+                    "task": normalized.get("blocking_task"),
+                    "span_id": span.get("span_id_hex", ""),
+                }
+            )
+        return sorted(blocks, key=lambda block: block["timestamp_ms"])
+
+    def get_job_dispatch(self) -> dict[str, float]:
+        """How long LiveKit took to hand the job to this agent, in ms per stage."""
+        for span in self.spans:
+            stages = {
+                key.removeprefix("job_").removesuffix("_latency_seconds"): value * 1000
+                for key, value in span.get("_normalized", {}).items()
+                if key.startswith("job_")
+                and key.endswith("_latency_seconds")
+                and value is not None
+            }
+            if stages:
+                return stages
+        return {}
+
     def to_dict(self) -> dict:
         series = self.get_ttfb_series()
         user_bot_latency = self.get_user_bot_latency_series()
@@ -369,4 +410,7 @@ class Metrics:
             "services": list(series.keys()),
             "user_bot_latency": user_bot_latency.to_dict() if user_bot_latency else None,
             "turn_breakdown": self._livekit_turn_breakdown(),
+            "event_loop_blocks": self.get_event_loop_blocks(),
+            "job_dispatch": self.get_job_dispatch(),
+            "usage": self.usage,
         }

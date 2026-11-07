@@ -8,19 +8,28 @@ which handle data ingestion from LiveKit Agents and Pipecat applications.
 import json
 import re
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse, Response
 from loguru import logger
 
-from .audio_handler import AudioHandler
+from finchvox.body_limit import limit_latest_route_body
+
+from .audio_handler import AudioHandler, RecordingInUseError, RecordingTooLargeError
 from .config import (
     ALLOWED_AUDIO_FORMATS,
     ALLOWED_FINAL_AUDIO_FORMATS,
     MAX_AUDIO_FILE_SIZE,
     MAX_FINAL_AUDIO_FILE_SIZE,
+    MAX_JSON_BODY_BYTES,
+    UPLOAD_BODY_MARGIN_BYTES,
     get_session_dir,
 )
+
+# What request.json() raises for a bad body. Catching only these matters: the body
+# limit's 413 is also raised through request.json() and must not become a 400.
+_INVALID_JSON_ERRORS = (ValueError, RecursionError)
 
 
 def _otel_attributes(span: dict) -> dict[str, object]:
@@ -134,8 +143,8 @@ def register_collector_routes(
     @app.post(f"{prefix}/audio/{{trace_id}}/chunk")
     async def upload_audio_chunk(
         trace_id: str,
-        audio: UploadFile = File(..., description="Audio file (WAV format)"),
-        metadata: str = Form(..., description="JSON metadata string"),
+        audio: Annotated[UploadFile, File(description="Audio file (WAV format)")],
+        metadata: Annotated[str, Form(description="JSON metadata string")],
     ):
         """
         Upload audio chunk for a trace.
@@ -247,22 +256,23 @@ def register_collector_routes(
 
         except HTTPException:
             raise
-        except Exception as e:
-            logger.error(
-                f"Failed to process audio upload for trace {trace_id}: {e}",
-                exc_info=True,
+        except (OSError, KeyError, TypeError, ValueError) as e:
+            logger.exception(
+                f"Failed to process audio upload for trace {trace_id}: {e}"
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Internal server error processing audio upload",
             )
 
+    limit_latest_route_body(app, MAX_AUDIO_FILE_SIZE + UPLOAD_BODY_MARGIN_BYTES)
+
     @app.post(f"{prefix}/livekit/report")
     async def receive_livekit_report_auto(request: Request):
         """Resolve a SessionReport to its local trace using LiveKit identifiers."""
         try:
             report = await request.json()
-        except Exception:
+        except _INVALID_JSON_ERRORS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON"
             )
@@ -291,6 +301,8 @@ def register_collector_routes(
             content={"status": "success", "trace_id": trace_id},
         )
 
+    limit_latest_route_body(app, MAX_JSON_BODY_BYTES)
+
     @app.post(f"{prefix}/livekit/{{trace_id}}/report")
     async def receive_livekit_report(trace_id: str, request: Request):
         """Store a local LiveKit SessionReport beside the matching OTel trace."""
@@ -300,7 +312,7 @@ def register_collector_routes(
             )
         try:
             report = await request.json()
-        except Exception:
+        except _INVALID_JSON_ERRORS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON"
             )
@@ -312,9 +324,12 @@ def register_collector_routes(
             content={"status": "success", "trace_id": trace_id},
         )
 
+    limit_latest_route_body(app, MAX_JSON_BODY_BYTES)
+
     @app.post(f"{prefix}/livekit/{{trace_id}}/audio")
     async def receive_livekit_audio(
-        trace_id: str, audio: UploadFile = File(..., description="Finalized session recording")
+        trace_id: str,
+        audio: Annotated[UploadFile, File(description="Finalized session recording")],
     ):
         """Store a finalized LiveKit recording for synchronized local replay."""
         if not re.match(r"^[a-f0-9]{32}$", trace_id):
@@ -331,29 +346,18 @@ def register_collector_routes(
                 ),
             )
 
-        session_dir = get_session_dir(audio_handler.data_dir, trace_id)
-        session_dir.mkdir(parents=True, exist_ok=True)
-        destination = session_dir / f"audio{extension}"
-        total = 0
         try:
-            with destination.open("wb") as output:
-                while True:
-                    chunk = await audio.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > MAX_FINAL_AUDIO_FILE_SIZE:
-                        raise HTTPException(
-                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                            detail=(
-                                "Finalized audio file exceeds "
-                                f"{MAX_FINAL_AUDIO_FILE_SIZE} byte limit"
-                            ),
-                        )
-                    output.write(chunk)
-        except Exception:
-            destination.unlink(missing_ok=True)
-            raise
+            total = await audio_handler.save_final_recording(
+                trace_id, audio, extension, MAX_FINAL_AUDIO_FILE_SIZE
+            )
+        except RecordingTooLargeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(e)
+            ) from e
+        except RecordingInUseError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(e)
+            ) from e
 
         logger.info(f"Received LiveKit audio for {trace_id[:8]}... ({total} bytes)")
         return JSONResponse(
@@ -365,6 +369,8 @@ def register_collector_routes(
                 "format": extension[1:],
             },
         )
+
+    limit_latest_route_body(app, MAX_FINAL_AUDIO_FILE_SIZE + UPLOAD_BODY_MARGIN_BYTES)
 
     @app.get(f"{prefix}/health")
     async def health_check():
@@ -397,7 +403,7 @@ def register_collector_routes(
                 "chunk_count": len(chunks),
                 "chunks": [{"path": str(p), "name": p.name} for p in chunks],
             }
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Failed to list chunks for trace {trace_id}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -414,7 +420,7 @@ def register_collector_routes(
 
         try:
             env_data = await request.json()
-        except Exception:
+        except _INVALID_JSON_ERRORS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid JSON",
@@ -429,3 +435,5 @@ def register_collector_routes(
         logger.info(f"Received environment data for trace {trace_id[:8]}...")
 
         return Response(status_code=status.HTTP_201_CREATED)
+
+    limit_latest_route_body(app, MAX_JSON_BODY_BYTES)

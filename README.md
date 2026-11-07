@@ -63,6 +63,8 @@ OpenTelemetry provides the trace/latency structure. A `SessionReport` improves t
 
 ### 1. Install
 
+Requires Python 3.12–3.14. The supported voice SDK baselines are LiveKit Agents 1.8.9+ and Pipecat 1.14+.
+
 From this repository:
 
 ```bash
@@ -99,11 +101,18 @@ By default:
 - OTLP/gRPC traces + logs: `localhost:4317`
 - data directory: `~/.finchvox`
 - bind address: `127.0.0.1` (local machine only)
+- largest session zip the UI accepts: 1024 MB
 
 Use a project-local data directory if preferred:
 
 ```bash
 uv run finchvox start --data-dir ./.finchvox-data
+```
+
+Change the session upload limit if you need to import larger sessions. Unzipped limits scale with it: 10× this size in total, and ¼ of it for JSON and JSONL files, which are loaded into memory.
+
+```bash
+uv run finchvox start --max-upload-mb 4096
 ```
 
 Finchvox binds to loopback by default. If another container or machine must reach it, opt in explicitly with `--host 0.0.0.0` and protect the port at the network layer.
@@ -184,7 +193,7 @@ Use:
 finchvox.init_livekit(allow_pii=False)
 ```
 
-for structural/timing telemetry without LiveKit's PII/content attributes.
+for structural/timing spans without LiveKit's PII/content attributes. This setting does not redact separately exported logs, uploaded SessionReports, or recordings.
 
 ### If you connect to LiveKit Cloud
 
@@ -292,7 +301,7 @@ node --check ui/js/sessions_list.js
 PYTHONPATH=src python -m compileall -q src tests examples/livekit
 ```
 
-The packaged validation snapshot is documented in [`VALIDATION.md`](VALIDATION.md).
+Background and fork history are in [`docs/FORK.md`](docs/FORK.md); research and design reviews are in [`docs/research/`](docs/research/README.md).
 
 ## Known limitations
 

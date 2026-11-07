@@ -1,7 +1,5 @@
-from typing import Optional
 
 from finchvox.adapters.base import BaseTraceAdapter, SpanTypeConfig
-
 
 SPAN_CONFIGS = {
     "conversation": SpanTypeConfig(
@@ -52,16 +50,16 @@ class PipecatAdapter(BaseTraceAdapter):
             css_class="bar-default",
         )
 
-    def get_transcript(self, span: dict) -> Optional[str]:
+    def get_transcript(self, span: dict) -> str | None:
         return self._get_attribute(span, "transcript")
 
-    def get_output_text(self, span: dict) -> Optional[str]:
+    def get_output_text(self, span: dict) -> str | None:
         text = self._get_attribute(span, "text")
         if text:
             return text
         return self._get_attribute(span, "output")
 
-    def get_ttfb(self, span: dict) -> Optional[float]:
+    def get_ttfb(self, span: dict) -> float | None:
         return self._get_attribute(span, "metrics.ttfb")
 
     def get_turn_span_names(self) -> list[str]:

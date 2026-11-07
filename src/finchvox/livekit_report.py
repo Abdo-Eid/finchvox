@@ -9,10 +9,10 @@ single playhead.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-import json
 
 
 def load_livekit_report(session_dir: Path) -> dict[str, Any] | None:
@@ -45,7 +45,7 @@ def timestamp_to_unix_nano(value: Any) -> int:
             value = float(text)
         except ValueError:
             try:
-                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                parsed = datetime.fromisoformat(text)
             except ValueError:
                 return 0
             return int(parsed.timestamp() * 1_000_000_000)
@@ -346,6 +346,48 @@ def report_events(report: dict[str, Any]) -> list[dict[str, Any]]:
 
     events.sort(key=lambda event: int(event.get("timestamp") or 0))
     return events
+
+
+_USAGE_KINDS = {
+    "llm_usage": "llm",
+    "tts_usage": "tts",
+    "stt_usage": "stt",
+    "interruption_usage": "interruption",
+    "eot_usage": "turn detector",
+}
+
+
+def report_usage(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return what each model was used for in the session (tokens, characters, seconds).
+
+    LiveKit's report lists one entry per model and provider, with unused fields left
+    out. Prices change often, so Finchvox shows the amounts rather than a cost.
+    """
+    usage = report.get("usage")
+    if not isinstance(usage, list):
+        return []
+
+    rows = []
+    for item in usage:
+        if not isinstance(item, dict):
+            continue
+        amounts = {
+            key: value
+            for key, value in item.items()
+            if key not in ("type", "provider", "model")
+            and isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and value
+        }
+        rows.append(
+            {
+                "kind": _USAGE_KINDS.get(item.get("type"), str(item.get("type") or "")),
+                "provider": item.get("provider") or "",
+                "model": item.get("model") or "",
+                "amounts": amounts,
+            }
+        )
+    return rows
 
 
 def report_metric_messages(report: dict[str, Any]) -> list[dict[str, Any]]:

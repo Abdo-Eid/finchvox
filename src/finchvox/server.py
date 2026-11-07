@@ -7,32 +7,34 @@ This module provides a single server that handles both data collection
 
 import asyncio
 import signal
-import grpc
-import uvicorn
 from concurrent import futures
 from pathlib import Path
+
+import grpc
+import uvicorn
 from fastapi import FastAPI
 from loguru import logger
-from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
-    add_TraceServiceServicer_to_server,
-)
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import (
     add_LogsServiceServicer_to_server,
 )
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
+    add_TraceServiceServicer_to_server,
+)
 
-from finchvox.collector.service import TraceCollectorServicer
-from finchvox.collector.log_service import LogCollectorServicer
-from finchvox.collector.writer import SpanWriter
-from finchvox.collector.log_writer import LogWriter
+from finchvox import telemetry
 from finchvox.collector.audio_handler import AudioHandler
 from finchvox.collector.collector_routes import register_collector_routes
-from finchvox.ui_routes import register_ui_routes
 from finchvox.collector.config import (
+    DEFAULT_MAX_UPLOAD_BYTES,
     GRPC_PORT,
     MAX_WORKERS,
     get_default_data_dir,
 )
-from finchvox import telemetry
+from finchvox.collector.log_service import LogCollectorServicer
+from finchvox.collector.log_writer import LogWriter
+from finchvox.collector.service import TraceCollectorServicer
+from finchvox.collector.writer import SpanWriter
+from finchvox.ui_routes import register_ui_routes
 
 
 class UnifiedServer:
@@ -50,7 +52,8 @@ class UnifiedServer:
         port: int = 3000,
         grpc_port: int = GRPC_PORT,
         host: str = "127.0.0.1",
-        data_dir: Path = None,
+        data_dir: Path | None = None,
+        max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ):
         """
         Initialize the unified server.
@@ -60,11 +63,13 @@ class UnifiedServer:
             grpc_port: gRPC server port (default: 4317)
             host: Host to bind to (default: "127.0.0.1")
             data_dir: Base data directory (default: ~/.finchvox)
+            max_upload_bytes: Largest session zip the UI upload accepts
         """
         self.port = port
         self.grpc_port = grpc_port
         self.host = host
         self.data_dir = data_dir if data_dir else get_default_data_dir()
+        self.max_upload_bytes = max_upload_bytes
 
         # Initialize shared writer instances
         self.span_writer = SpanWriter(self.data_dir)
@@ -94,7 +99,7 @@ class UnifiedServer:
         )
 
         # Register UI routes first (includes static file mounts)
-        register_ui_routes(app, self.data_dir)
+        register_ui_routes(app, self.data_dir, self.max_upload_bytes)
 
         # Register collector routes with /collector prefix
         register_collector_routes(app, self.audio_handler, prefix="/collector")

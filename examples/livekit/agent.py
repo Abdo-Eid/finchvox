@@ -1,10 +1,9 @@
 import logging
 
 import finchvox
-from finchvox.livekit import upload_session_artifacts
 from dotenv import load_dotenv
-from livekit.agents import Agent, AgentServer, AgentSession, JobContext, cli, inference
-from livekit.plugins import silero
+from finchvox.livekit import upload_session_artifacts
+from livekit.agents import Agent, AgentServer, AgentSession, JobContext, inference
 
 load_dotenv()
 
@@ -24,8 +23,8 @@ class VoiceAgent(Agent):
         super().__init__(
             instructions="You are a helpful voice assistant. Keep responses brief and conversational.",
             stt=inference.STT(model="deepgram/nova-3"),
-            llm=inference.LLM(model="openai/gpt-4o-mini"),
-            tts=inference.TTS(model="cartesia/sonic"),
+            llm=inference.LLM(model="google/gemma-4-31b-it"),
+            tts=inference.TTS(model="cartesia/sonic-3"),
         )
 
     async def on_enter(self):
@@ -58,9 +57,10 @@ async def entrypoint(ctx: JobContext):
 
     ctx.add_shutdown_callback(flush_observability)
 
-    session = AgentSession(vad=silero.VAD.load())
+    # AgentSession uses LiveKit's bundled Silero VAD by default.
+    session = AgentSession()
     await session.start(agent=VoiceAgent(), room=ctx.room)
 
 
-if __name__ == "__main__":
-    cli.run_app(server)
+# Launch with `python -m livekit.agents start agent.py` or `lk agent dev`.
+# The legacy cli.run_app()/`python agent.py dev` interface is deprecated.

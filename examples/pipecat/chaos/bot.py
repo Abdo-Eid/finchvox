@@ -6,20 +6,20 @@
 
 import os
 import random
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from dotenv import load_dotenv
 from loguru import logger
-from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import Frame, LLMRunFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
 )
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
@@ -30,6 +30,7 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
+from pipecat.workers.runner import WorkerRunner
 
 import finchvox
 from finchvox import FinchvoxProcessor
@@ -75,10 +76,10 @@ class ChaosDeepgramSTTService(DeepgramSTTService):
 
 
 class ChaosCartesiaTTSService(CartesiaTTSService):
-    async def run_tts(self, text: str) -> AsyncGenerator[Frame, None]:
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         if should_fail("TTS_FAIL_RATE"):
             raise Exception("Simulated TTS failure")
-        async for frame in super().run_tts(text):
+        async for frame in super().run_tts(text, context_id):
             yield frame
 
 
@@ -112,17 +113,14 @@ transport_params = {
     "daily": lambda: DailyParams(
         audio_in_enabled=True,
         audio_out_enabled=True,
-        vad_analyzer=SileroVADAnalyzer(),
     ),
     "twilio": lambda: FastAPIWebsocketParams(
         audio_in_enabled=True,
         audio_out_enabled=True,
-        vad_analyzer=SileroVADAnalyzer(),
     ),
     "webrtc": lambda: TransportParams(
         audio_in_enabled=True,
         audio_out_enabled=True,
-        vad_analyzer=SileroVADAnalyzer(),
     ),
 }
 
@@ -132,12 +130,14 @@ async def run_bot(transport: BaseTransport):
 
     tts = ChaosCartesiaTTSService(
         api_key=os.getenv("CARTESIA_API_KEY"),
-        voice_id="f786b574-daa5-4673-aa0c-cbe3e8534c02",
+        settings=ChaosCartesiaTTSService.Settings(
+            voice="f786b574-daa5-4673-aa0c-cbe3e8534c02"
+        ),
     )
 
     llm = ChaosOpenAILLMService(
         api_key=os.getenv("OPENAI_API_KEY"),
-        params=ChaosOpenAILLMService.InputParams(temperature=0.5),
+        settings=ChaosOpenAILLMService.Settings(temperature=0.5),
     )
 
     llm.register_function("add_item_to_order", with_chaos(add_item_to_order))
@@ -235,7 +235,10 @@ Your output will be converted to audio so don't include special characters. Be c
     ]
 
     context = LLMContext(messages, tools)
-    context_aggregator = LLMContextAggregatorPair(context)
+    context_aggregator = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+    )
 
     pipeline = Pipeline(
         [
@@ -250,7 +253,7 @@ Your output will be converted to audio so don't include special characters. Be c
         ]
     )
 
-    task = PipelineTask(
+    task = PipelineWorker(
         pipeline,
         params=PipelineParams(
             enable_metrics=True,
@@ -270,9 +273,10 @@ Your output will be converted to audio so don't include special characters. Be c
         logger.info("Client disconnected")
         await task.cancel()
 
-    runner = PipelineRunner(handle_sigint=False)
+    runner = WorkerRunner(handle_sigint=False)
 
-    await runner.run(task)
+    await runner.add_workers(task)
+    await runner.run()
 
 
 async def bot(runner_args: RunnerArguments):

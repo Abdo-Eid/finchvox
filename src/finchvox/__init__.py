@@ -3,16 +3,12 @@ from __future__ import annotations
 import logging
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from loguru import logger
 from opentelemetry import trace as otel_trace
 from opentelemetry.sdk.trace import TracerProvider
 
 from finchvox.environment import EnvironmentSpanProcessor, capture_environment
-
-if TYPE_CHECKING:
-    from opentelemetry.sdk.trace import TracerProvider
 
 _initialized = False
 _allowed_log_modules: set[str] = {"pipecat.", "finchvox.", "__main__"}
@@ -43,7 +39,7 @@ def init(
         app_root: Root directory of the application source. Logs from files
             under this path are captured automatically. Defaults to ``cwd()``.
     """
-    global _initialized, _allowed_log_modules, _app_root
+    global _initialized, _app_root
 
     if _initialized:
         logger.warning("finchvox.init() already called, skipping")
@@ -68,8 +64,9 @@ def init(
 
     provider = otel_trace.get_tracer_provider()
     if isinstance(provider, TracerProvider):
-        http_endpoint = endpoint.replace(":4317", ":3000")
-        env_processor = EnvironmentSpanProcessor(endpoint=http_endpoint)
+        env_processor = EnvironmentSpanProcessor(
+            endpoint=_collector_http_endpoint(endpoint)
+        )
         provider.add_span_processor(env_processor)
 
     if capture_logs:
@@ -79,6 +76,11 @@ def init(
     logger.info(
         f"Finchvox v{version('finchvox')} initialized with service_name='{service_name}', endpoint='{endpoint}', capture_logs={capture_logs}"
     )
+
+
+def _collector_http_endpoint(grpc_endpoint: str) -> str:
+    """Finchvox serves HTTP on 3000 next to its OTLP/gRPC collector on 4317."""
+    return grpc_endpoint.replace(":4317", ":3000")
 
 
 def _is_allowed_source(module: str, pathname: str | None) -> bool:
@@ -112,8 +114,7 @@ class TraceContextLoggingHandler(logging.Handler):
     """LoggingHandler that only emits logs with active Pipecat trace context.
 
     This handler wraps OpenTelemetry's LoggingHandler and only forwards logs
-    when there's an active trace context from Pipecat's TurnContextProvider
-    or ConversationContextProvider.
+    when there is a valid active OpenTelemetry span from the pipeline.
 
     The key difference from using a Filter is that this handler keeps the
     trace context attached during the entire emit() call, including when
@@ -144,26 +145,38 @@ class TraceContextLoggingHandler(logging.Handler):
                 detach(token)
 
 
-def _setup_log_capture(service_name: str, endpoint: str, insecure: bool) -> None:
-    """Set up OpenTelemetry log capture and export."""
-    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+def _build_otel_log_handler(service_name: str, endpoint: str, insecure: bool):
+    """Create a stdlib logging handler plus its provider, exporting to Finchvox over OTLP."""
     from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.instrumentation.logging import LoggingInstrumentor
+    from opentelemetry.instrumentation.logging.handler import LoggingHandler
+    from opentelemetry.sdk._logs import LoggerProvider
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 
-    resource = Resource.create({"service.name": service_name})
-    logger_provider = LoggerProvider(resource=resource)
-
+    logger_provider = LoggerProvider(resource=Resource.create({SERVICE_NAME: service_name}))
     log_exporter = OTLPLogExporter(endpoint=endpoint, insecure=insecure)
     logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
 
-    otel_handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+    handler = LoggingHandler(
+        level=logging.NOTSET,
+        logger_provider=logger_provider,
+        log_code_attributes=True,
+    )
+    return handler, logger_provider
+
+
+def _setup_log_capture(service_name: str, endpoint: str, insecure: bool) -> None:
+    """Set up OpenTelemetry log capture and export."""
+    from opentelemetry.instrumentation.logging import LoggingInstrumentor
+
+    otel_handler, _ = _build_otel_log_handler(service_name, endpoint, insecure)
     wrapper_handler = TraceContextLoggingHandler(otel_handler)
     logging.getLogger().addHandler(wrapper_handler)
     logging.getLogger().setLevel(logging.DEBUG)
 
-    LoggingInstrumentor().instrument(set_logging_format=True)
+    LoggingInstrumentor().instrument(
+        set_logging_format=True, enable_log_auto_instrumentation=False
+    )
 
     _setup_loguru_bridge()
 
@@ -171,27 +184,13 @@ def _setup_log_capture(service_name: str, endpoint: str, insecure: bool) -> None
 
 
 def _get_pipecat_context():
-    """Get current trace context from Pipecat's turn or conversation provider.
+    """Return active OpenTelemetry context without a global pipeline singleton."""
+    if otel_trace.get_current_span().get_span_context().is_valid:
+        from opentelemetry.context import get_current
 
-    OpenTelemetry's LoggingInstrumentor reads trace context from thread-local
-    contextvars, but Pipecat stores the current turn's span context in a custom
-    singleton (TurnContextProvider). This function bridges the gap by retrieving
-    the context from Pipecat's providers so we can inject it into thread-local
-    storage before forwarding logs.
-    """
-    try:
-        from pipecat.utils.tracing.turn_context_provider import get_current_turn_context
+        return get_current()
 
-        ctx = get_current_turn_context()
-        if ctx:
-            return ctx
-        from pipecat.utils.tracing.conversation_context_provider import (
-            get_current_conversation_context,
-        )
-
-        return get_current_conversation_context()
-    except ImportError:
-        return None
+    return None
 
 
 def _setup_loguru_bridge() -> None:
@@ -201,9 +200,8 @@ def _setup_loguru_bridge() -> None:
     patchers survive logger.remove() calls. This is important because Pipecat's
     runner calls logger.remove() to reconfigure logging.
 
-    This bridge also injects trace context from Pipecat's TurnContextProvider
-    into thread-local storage before forwarding logs, ensuring logs during
-    active turns are associated with the correct trace.
+    This bridge preserves active OpenTelemetry context while forwarding logs,
+    ensuring logs during active turns are associated with the correct trace.
     """
     from loguru import logger as loguru_logger
 
@@ -252,22 +250,12 @@ def _setup_livekit_log_export(
     time, so logs produced while LiveKit spans are active arrive at Finchvox
     with matching trace/span IDs and can be synchronized with the replay UI.
     """
-    from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
-    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-    from opentelemetry.sdk.resources import Resource, SERVICE_NAME
-
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
         if getattr(handler, "_finchvox_livekit_handler", False):
             return getattr(handler, "_finchvox_logger_provider", None)
 
-    resource = Resource.create({SERVICE_NAME: service_name})
-    logger_provider = LoggerProvider(resource=resource)
-    exporter = OTLPLogExporter(endpoint=endpoint, insecure=insecure)
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
-
-    handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+    handler, logger_provider = _build_otel_log_handler(service_name, endpoint, insecure)
     handler._finchvox_livekit_handler = True
     handler._finchvox_logger_provider = logger_provider
     root_logger.addHandler(handler)
@@ -291,14 +279,15 @@ def init_livekit(
 
     ``allow_pii=True`` is intentionally the default for the local replay UX so
     transcripts, tool arguments/results and response text can be displayed.
-    Set it to ``False`` when you prefer metadata-only traces. LiveKit Agents
-    versions predating this option are supported with a compatibility fallback.
+    Set it to ``False`` to strip span content. This does not redact separately
+    exported logs, uploaded session reports, or recordings. Requires the
+    supported LiveKit Agents baseline (1.8.9+) with ``allow_pii`` support.
     """
+    from livekit.agents.telemetry import set_tracer_provider
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+    from opentelemetry.sdk.resources import SERVICE_NAME, Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    from livekit.agents.telemetry import set_tracer_provider
 
     resource = Resource.create({SERVICE_NAME: service_name})
     tracer_provider = TracerProvider(resource=resource)
@@ -306,13 +295,15 @@ def init_livekit(
     exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
     tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
 
-    try:
-        set_tracer_provider(
-            tracer_provider, metadata=metadata, allow_pii=allow_pii
-        )
-    except TypeError:
-        # Compatibility with older LiveKit Agents releases.
-        set_tracer_provider(tracer_provider, metadata=metadata)
+    # Feeds the Environment tab: OS, Python and installed package versions.
+    capture_environment()
+    tracer_provider.add_span_processor(
+        EnvironmentSpanProcessor(endpoint=_collector_http_endpoint(endpoint))
+    )
+
+    set_tracer_provider(
+        tracer_provider, metadata=metadata, allow_pii=allow_pii
+    )
 
     logger_provider = None
     if capture_logs:
@@ -351,4 +342,4 @@ def __getattr__(name: str):
     raise AttributeError(name)
 
 
-__all__ = ["init", "init_livekit", "flush_livekit", "FinchvoxProcessor"]
+__all__ = ["FinchvoxProcessor", "flush_livekit", "init", "init_livekit"]

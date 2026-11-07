@@ -10,7 +10,7 @@
     <script src="/lib/wavesurfer.min.js"></script>
     <script src="/lib/chart.min.js"></script>
 </head>
-<body class="insights-body" x-data="sessionDetailApp()" x-init="init()">
+<body class="insights-body" x-data="sessionDetailApp()">
 <div class="min-h-screen flex bg-[#08090b] text-[#e7e9ee]">
     <div class="flex-1 min-w-0 h-screen overflow-y-auto transition-[margin] duration-300"
          :class="(isPanelOpen || isLogPanelOpen) ? 'mr-[460px]' : ''">
@@ -270,6 +270,35 @@
                         <div class="flex items-end justify-between mt-2"><div class="text-2xl font-mono" x-text="`${breakdown.stats.avg_ms.toFixed(0)} ms`"></div><div class="text-[11px] text-white/35" x-text="`p95 ${breakdown.stats.p95_ms.toFixed(0)} ms · n=${breakdown.stats.count}`"></div></div>
                     </div>
                 </template>
+                <div x-show="metricsData?.event_loop_blocks?.length" class="metric-card">
+                    <div class="metric-card-header">
+                        <div><div class="metric-kicker">Event loop</div><div class="metric-title">Blocked moments</div></div>
+                        <div class="metric-stat"><span>worst</span><strong x-text="`${getWorstEventLoopBlockMs().toFixed(0)} ms`"></strong></div>
+                    </div>
+                    <template x-for="block in (metricsData?.event_loop_blocks || [])" :key="block.span_id">
+                        <div role="button" tabindex="0" style="cursor:pointer" class="flex w-full justify-between border-b border-white/[0.04] py-1 font-mono text-[11px]" @click="selectMetricsSpan(block.span_id)" @keydown.enter="selectMetricsSpan(block.span_id)">
+                            <span class="text-white/60" x-text="`${formatMetricsTime(block.relative_time_ms / 1000)} · ${block.task || 'unknown task'}`"></span>
+                            <span :class="block.severity === 'error' ? 'text-red-300' : 'text-white/40'" x-text="`${block.duration_ms.toFixed(0)} ms`"></span>
+                        </div>
+                    </template>
+                </div>
+                <div x-show="Object.keys(metricsData?.job_dispatch || {}).length" class="metric-card">
+                    <div class="metric-card-header"><div><div class="metric-kicker">Job dispatch</div><div class="metric-title">Time to start the agent</div></div></div>
+                    <template x-for="(milliseconds, stage) in (metricsData?.job_dispatch || {})" :key="stage">
+                        <div class="flex justify-between border-b border-white/[0.04] py-1 font-mono text-[11px]"><span class="text-white/60" x-text="stage"></span><span class="text-white/40" x-text="`${milliseconds.toFixed(0)} ms`"></span></div>
+                    </template>
+                </div>
+                <div x-show="metricsData?.usage?.length" class="metric-card">
+                    <div class="metric-card-header"><div><div class="metric-kicker">SessionReport</div><div class="metric-title">Model usage</div></div></div>
+                    <template x-for="row in (metricsData?.usage || [])" :key="`${row.kind}-${row.provider}-${row.model}`">
+                        <div class="border-b border-white/[0.04] py-2 font-mono text-[11px]">
+                            <div class="flex justify-between"><span class="text-white/70" x-text="`${row.kind.toUpperCase()} · ${row.provider}/${row.model}`"></span></div>
+                            <div class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-white/40">
+                                <template x-for="amount in usageAmounts(row)" :key="amount.label"><span x-text="`${amount.label}: ${amount.value}`"></span></template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
             </div>
         </main>
 

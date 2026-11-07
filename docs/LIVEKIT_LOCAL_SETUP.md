@@ -21,12 +21,12 @@ There is one important distinction: **LiveKit media transport and LiveKit Cloud 
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.12–3.14
 - `uv` (recommended) or `pip`
 - a working LiveKit Agents Python project
 - a LiveKit server (LiveKit Cloud or self-hosted)
 
-For the best Finchvox replay, use a current LiveKit Agents release. Finchvox supports both newer `lk.pii.*` attributes and older LiveKit telemetry attribute names.
+Finchvox needs LiveKit Agents 1.8.9 or newer. It reads the `lk.pii.*` and GenAI telemetry attributes those releases write, and does not read the attribute names used before 1.8. The span and attribute names were last checked against 1.8.11.
 
 ## 1. Install the fork
 
@@ -110,7 +110,7 @@ tracer_provider = finchvox.init_livekit(
 )
 ```
 
-LiveKit strips PII/content fields before they reach Finchvox in this mode, so the Trace and Metrics views still work but the local transcript/tool-content experience is intentionally reduced.
+With the supported LiveKit Agents 1.8.9+ baseline, this strips span content before it reaches the custom exporter. It does not redact separately exported logs, uploaded SessionReports, or recordings. The Trace and Metrics views still work, but the trace-derived transcript/tool-content experience is intentionally reduced.
 
 ## 4. Flush telemetry during shutdown
 
@@ -173,8 +173,7 @@ import logging
 
 import finchvox
 from finchvox.livekit import upload_session_artifacts
-from livekit.agents import Agent, AgentServer, AgentSession, JobContext, cli, inference
-from livekit.plugins import silero
+from livekit.agents import Agent, AgentServer, AgentSession, JobContext, inference
 
 logger = logging.getLogger("my-agent")
 
@@ -191,7 +190,7 @@ class Assistant(Agent):
         super().__init__(
             instructions="You are a concise, helpful voice assistant.",
             stt=inference.STT(model="deepgram/nova-3"),
-            llm=inference.LLM(model="openai/gpt-5.2-chat-latest"),
+            llm=inference.LLM(model="google/gemma-4-31b-it"),
             tts=inference.TTS(model="inworld/inworld-tts-2"),
         )
 
@@ -216,12 +215,13 @@ async def entrypoint(ctx: JobContext):
 
     ctx.add_shutdown_callback(flush_observability)
 
-    session = AgentSession(vad=silero.VAD.load())
+    # AgentSession uses LiveKit's bundled Silero VAD by default.
+    session = AgentSession()
     await session.start(agent=Assistant(), room=ctx.room)
 
 
-if __name__ == "__main__":
-    cli.run_app(server)
+# Save as agent.py, then launch with:
+# uv run python -m livekit.agents start agent.py
 ```
 
 A runnable version lives in [`examples/livekit/agent.py`](../examples/livekit/agent.py).
@@ -310,20 +310,31 @@ On Linux, use an explicit host-gateway mapping or put both services on the same 
 
 ## 9. What Finchvox recognizes from LiveKit
 
-The local trace adapter understands LiveKit's current and legacy shapes, including:
+The local trace adapter understands the spans LiveKit Agents 1.8 creates, including:
 
 ```text
 agent_session
 ├── user_turn
-│   ├── stt_node / stt_request
-│   └── eou_wait
+│   ├── user_speaking
+│   ├── eou_wait / eou_detection
+│   └── keyterm_detection
 ├── agent_turn
-│   ├── llm_node / llm_request
-│   ├── function_tool / execute_tool
-│   └── tts_node / tts_request
+│   ├── llm_request (llm_fallback_adapter when a fallback chain is used)
+│   ├── function_tool
+│   └── tts_request (tts_fallback_adapter / tts_stream_adapter)
 ├── update_agent          # handoff
-└── room_connect / room_io
+├── event_loop_blocked    # the agent's event loop was blocked (red bar)
+├── amd                   # answering machine detection
+└── room_connect / wait_for_audio_track
 ```
+
+Lifecycle spans such as `job_entrypoint`, `on_enter`, `session_close` and `rpc_call` are kept in the trace but hidden from the timeline unless they fail.
+
+The **Metrics** tab also shows, when the agent provides them:
+
+- blocked moments of the agent's event loop, with the task that blocked it,
+- how long LiveKit took to dispatch the job to the agent,
+- per-model usage (tokens, characters, audio seconds) from the uploaded `SessionReport`.
 
 When emitted by the SDK, the UI also surfaces:
 

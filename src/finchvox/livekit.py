@@ -7,12 +7,51 @@ to the same Finchvox session so the replay UI can be fully synchronized.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 from opentelemetry import trace as otel_trace
+
+logger = logging.getLogger(__name__)
+
+# Finchvox answers 409 when the session's current recording is open, for example
+# because someone is playing it, so it cannot be replaced yet. Playback usually
+# ends soon, so wait and try again, about 31 s in total. upload_session_artifacts
+# is meant to run in on_session_end, which LiveKit allows 5 minutes by default.
+IN_USE_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0, 16.0)
+
+
+async def _wait_before_retry(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+
+
+async def _upload_recording(
+    session: aiohttp.ClientSession, url: str, path: Path
+) -> None:
+    for delay in (*IN_USE_RETRY_DELAYS, None):
+        # A fresh form and file handle per attempt, since a sent form is consumed.
+        with path.open("rb") as file_handle:
+            form = aiohttp.FormData()
+            form.add_field(
+                "audio",
+                file_handle,
+                filename=path.name,
+                content_type="application/octet-stream",
+            )
+            async with session.post(url, data=form) as response:
+                if response.status != 409 or delay is None:
+                    response.raise_for_status()
+                    return
+        logger.warning(
+            "Finchvox recording is in use, for example being played; "
+            "retrying the upload in %.0f s",
+            delay,
+        )
+        await _wait_before_retry(delay)
 
 
 def current_trace_id() -> str | None:
@@ -60,6 +99,10 @@ async def upload_session_artifacts(
             contains ``audio_recording_path``, that path is used automatically.
         endpoint: Finchvox HTTP server origin.
 
+    If the session's current recording is being played, Finchvox cannot replace it
+    yet and answers 409. The upload is then retried for about 31 seconds before the
+    409 is raised. Other errors are raised immediately.
+
     Returns:
         The resolved 32-character Finchvox/OpenTelemetry trace ID.
     """
@@ -96,18 +139,9 @@ async def upload_session_artifacts(
         if audio_path:
             path = Path(audio_path).expanduser()
             if path.exists() and path.is_file():
-                form = aiohttp.FormData()
-                with path.open("rb") as file_handle:
-                    form.add_field(
-                        "audio",
-                        file_handle,
-                        filename=path.name,
-                        content_type="application/octet-stream",
-                    )
-                    async with session.post(
-                        f"{base}/collector/livekit/{trace_id}/audio", data=form
-                    ) as response:
-                        response.raise_for_status()
+                await _upload_recording(
+                    session, f"{base}/collector/livekit/{trace_id}/audio", path
+                )
 
     return trace_id
 

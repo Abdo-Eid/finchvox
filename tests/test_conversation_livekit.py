@@ -20,7 +20,7 @@ def test_livekit_conversation_prefers_turn_spans_and_avoids_child_duplicates():
             },
         },
         {
-            "name": "stt_request",
+            "name": "user_speaking",
             "span_id_hex": "stt-child",
             "parent_span_id_hex": "user-turn",
             "start_time_unix_nano": 11,
@@ -88,7 +88,7 @@ def test_livekit_conversation_falls_back_to_child_text_when_turn_has_no_content(
             "_normalized": {"category": "stt", "transcript": None},
         },
         {
-            "name": "stt_request",
+            "name": "user_speaking",
             "span_id_hex": "stt-child",
             "parent_span_id_hex": "user-turn",
             "start_time_unix_nano": 11,

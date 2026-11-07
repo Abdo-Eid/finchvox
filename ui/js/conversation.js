@@ -38,12 +38,13 @@ function conversationViewMixin() {
 
             const messageMs = Number(message.timestamp) / 1_000_000;
 
-            if (this.wavesurfer && this.duration) {
-                const isPlaying = this.wavesurfer.isPlaying();
+            const player = this.getAudioPlayer();
+            if (player && this.duration) {
+                const isPlaying = player.isPlaying();
                 if (!isPlaying) {
                     const audioTime = (messageMs - this.minTime) / 1000;
                     const progress = audioTime / this.duration;
-                    this.wavesurfer.seekTo(Math.max(0, Math.min(1, progress)));
+                    player.seekTo(Math.max(0, Math.min(1, progress)));
                     this.currentTime = audioTime;
                 }
             }

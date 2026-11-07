@@ -9,20 +9,39 @@ Provides subcommands:
 import argparse
 import os
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from finchvox.server import UnifiedServer
-from finchvox.collector.config import GRPC_PORT
+
 from finchvox import telemetry
+from finchvox.collector.config import BYTES_PER_MB, DEFAULT_MAX_UPLOAD_MB, GRPC_PORT
+from finchvox.server import UnifiedServer
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError(f"must be greater than 0, got {value}")
+    return number
+
+
+def add_max_upload_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--max-upload-mb",
+        type=_positive_int,
+        default=DEFAULT_MAX_UPLOAD_MB,
+        help=(
+            "Largest session zip the UI upload accepts, in MB; unzipped size limits "
+            f"scale with it (default: {DEFAULT_MAX_UPLOAD_MB})"
+        ),
+    )
 
 
 def get_version() -> str:
     """Get the package version."""
     # Read version from pyproject.toml or package metadata
     try:
-        from importlib.metadata import version
-
         return version("finchvox")
-    except Exception:
+    except PackageNotFoundError:
         return "0.0.1"  # Fallback version
 
 
@@ -48,12 +67,17 @@ def cmd_start(args):
     print(f"  - Collector: http://{args.host}:{args.port}/collector")
     print(f"gRPC Server:  {args.host}:{args.grpc_port}")
     print(f"Data Directory: {data_dir}")
+    print(f"Max Upload: {args.max_upload_mb} MB")
     if not telemetry.is_enabled():
         print("Telemetry: Disabled")
     print("=" * 50)
 
     server = UnifiedServer(
-        port=args.port, grpc_port=args.grpc_port, host=args.host, data_dir=data_dir
+        port=args.port,
+        grpc_port=args.grpc_port,
+        host=args.host,
+        data_dir=data_dir,
+        max_upload_bytes=args.max_upload_mb * BYTES_PER_MB,
     )
     server.run()
 
@@ -85,6 +109,7 @@ Examples:
   finchvox start --port 8000               # Custom HTTP port
   finchvox start --grpc-port 4318          # Custom gRPC port
   finchvox start --data-dir ./my-data      # Custom data directory
+  finchvox start --max-upload-mb 4096      # Allow session uploads up to 4 GB
         """,
     )
     start_parser.add_argument(
@@ -105,6 +130,7 @@ Examples:
         default=None,
         help="Data directory for traces/logs/audio/exceptions (default: ~/.finchvox)",
     )
+    add_max_upload_argument(start_parser)
     start_parser.add_argument(
         "--telemetry",
         type=str,

@@ -6,6 +6,8 @@ For the complete explanation—including privacy, LiveKit Cloud vs self-hosted b
 
 ## 1. Create the example environment
 
+Use Python 3.12–3.14 and LiveKit Agents 1.8.9+.
+
 From the repository root:
 
 ```bash
@@ -42,7 +44,8 @@ The collector listens for OTLP/gRPC traces and logs on `localhost:4317`.
 In terminal 2, also from `examples/livekit`:
 
 ```bash
-uv run python agent.py dev
+uv run python -m livekit.agents download-files
+uv run python -m livekit.agents start agent.py --dev
 ```
 
 Join the room with your normal LiveKit client/playground and talk to the agent.
@@ -61,7 +64,7 @@ The session then appears in the Finchvox UI with synchronized **Transcript**, **
 
 ## PII/content
 
-The example uses `allow_pii=True` so a local replay can display transcript, model, and tool content. Set it to `False` if you only want structural and latency telemetry.
+The example uses `allow_pii=True` so a local replay can display transcript, model, and tool content. Set it to `False` to strip content from exported spans. This does not redact separately exported logs, uploaded SessionReports, or audio.
 
 Treat `../../.finchvox-data` as sensitive when PII is enabled because it may contain transcript text, tool payloads, logs, and audio.
 
@@ -72,5 +75,13 @@ OTel does not contain replayable room audio. `upload_session_artifacts()` automa
 LiveKit's own `record=` option is independent from the custom Finchvox exporter. If the agent is connected to LiveKit Cloud, do not assume `record=True` is local-only. See the full setup guide before choosing recording settings for a privacy-sensitive deployment.
 
 ## Docker/container note
+
+Build from the repository root so the image installs this fork, not the public PyPI package:
+
+```bash
+docker build -f examples/livekit/Dockerfile -t finchvox-livekit-agent .
+```
+
+The image installs the root lockfile's LiveKit extra with `uv` and starts the agent using the current module-based CLI. Pass credentials at runtime rather than copying `.env` into the image. Image builds and model downloads require network access.
 
 If the agent runs in a container and Finchvox runs elsewhere, `localhost:4317` points at the agent container and is usually wrong. Point `endpoint` at the Finchvox container/service name and pass the corresponding HTTP endpoint to `upload_session_artifacts()`.

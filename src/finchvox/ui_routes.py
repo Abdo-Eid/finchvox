@@ -1,26 +1,39 @@
 import json
-import tempfile
+from functools import wraps
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
-from finchvox.adapters import get_adapter
-from finchvox.audio_utils import find_chunks, combine_chunks
-from finchvox.conversation import Conversation
-from finchvox.metrics import Metrics
-from finchvox.livekit_report import load_livekit_report, report_events, report_messages
-from finchvox.session import Session
-from finchvox.collector.config import (
-    get_sessions_base_dir,
-    get_session_dir,
-    get_session_audio_dir,
-    get_default_data_dir,
-)
 from finchvox import telemetry
-
+from finchvox.adapters import get_adapter
+from finchvox.audio_utils import (
+    combine_chunks_to_temp_file,
+    find_chunks,
+    find_finalized_audio,
+)
+from finchvox.body_limit import limit_latest_route_body
+from finchvox.collector.config import (
+    DEFAULT_MAX_UPLOAD_BYTES,
+    get_default_data_dir,
+    get_session_audio_dir,
+    get_session_dir,
+    get_sessions_base_dir,
+)
+from finchvox.conversation import Conversation
+from finchvox.livekit_report import (
+    load_livekit_report,
+    report_events,
+    report_messages,
+    report_usage,
+)
+from finchvox.metrics import Metrics
+from finchvox.session import MALFORMED_SESSION_ERRORS, Session
+from finchvox.temp_file_response import TempFileResponse, TempPathResponse
 
 UI_DIR = Path(__file__).parent / "ui"
 if not UI_DIR.exists():
@@ -28,27 +41,46 @@ if not UI_DIR.exists():
     UI_DIR = PROJECT_ROOT / "ui"
 
 
+def _explains_damaged_session(handler):
+    """Turn errors from reading damaged session files into an explanation.
+
+    The details go to the server log, not the response, because they can contain
+    server paths.
+    """
+
+    @wraps(handler)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await handler(*args, **kwargs)
+        except MALFORMED_SESSION_ERRORS as e:
+            logger.exception("Could not read session data")
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Could not read this session; its files may be damaged. "
+                    "See the server log for details."
+                ),
+            ) from e
+
+    return wrapper
+
+
+_FINALIZED_AUDIO_MEDIA_TYPES = {
+    ".opus": "audio/opus",
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+    ".webm": "audio/webm",
+    ".m4a": "audio/mp4",
+}
+
+
 def _get_finalized_audio_file(data_dir: Path, session_id: str) -> Path | None:
-    session_dir = get_session_dir(data_dir, session_id)
-    for extension in (".opus", ".wav", ".mp3", ".ogg", ".flac", ".webm", ".m4a"):
-        candidate = session_dir / f"audio{extension}"
-        if candidate.exists():
-            return candidate
-    return None
+    return find_finalized_audio(get_session_dir(data_dir, session_id))
 
 
-def _get_combined_audio_file(
-    data_dir: Path, session_id: str, background_tasks: BackgroundTasks
-) -> tuple[Path, str, bool]:
-    finalized = _get_finalized_audio_file(data_dir, session_id)
-    if finalized:
-        media_types = {
-            ".opus": "audio/opus", ".wav": "audio/wav", ".mp3": "audio/mpeg",
-            ".ogg": "audio/ogg", ".flac": "audio/flac", ".webm": "audio/webm",
-            ".m4a": "audio/mp4",
-        }
-        return finalized, media_types.get(finalized.suffix, "application/octet-stream"), False
-
+def _find_session_chunks(data_dir: Path, session_id: str) -> list[tuple[int, Path]]:
     audio_dir = get_session_audio_dir(data_dir, session_id)
     if not audio_dir.exists():
         raise HTTPException(
@@ -64,19 +96,20 @@ def _get_combined_audio_file(
         )
 
     logger.info(f"Found {len(chunks)} chunks for session {session_id}")
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-
-    combine_chunks(chunks, tmp_path)
-    background_tasks.add_task(tmp_path.unlink)
-
-    return tmp_path, "audio/wav", True
+    return chunks
 
 
-async def _handle_list_sessions(sessions_base_dir: Path) -> JSONResponse:
+async def _handle_list_sessions(
+    sessions_base_dir: Path, max_upload_bytes: int
+) -> JSONResponse:
     if not sessions_base_dir.exists():
-        return JSONResponse({"sessions": [], "data_dir": str(sessions_base_dir)})
+        return JSONResponse(
+            {
+                "sessions": [],
+                "data_dir": str(sessions_base_dir),
+                "max_upload_bytes": max_upload_bytes,
+            }
+        )
 
     sessions = []
     for session_dir in sessions_base_dir.iterdir():
@@ -92,12 +125,18 @@ async def _handle_list_sessions(sessions_base_dir: Path) -> JSONResponse:
         try:
             session = Session(session_dir)
             sessions.append(session.to_dict())
-        except Exception as e:
+        except MALFORMED_SESSION_ERRORS as e:
             print(f"Error reading session {session_dir}: {e}")
             continue
 
     sessions.sort(key=lambda s: s.get("start_time") or 0, reverse=True)
-    return JSONResponse({"sessions": sessions, "data_dir": str(sessions_base_dir)})
+    return JSONResponse(
+        {
+            "sessions": sessions,
+            "data_dir": str(sessions_base_dir),
+            "max_upload_bytes": max_upload_bytes,
+        }
+    )
 
 
 def _get_session(data_dir: Path, session_id: str) -> Session:
@@ -111,13 +150,10 @@ def _get_session(data_dir: Path, session_id: str) -> Session:
 
 
 def _get_session_spans(data_dir: Path, session_id: str) -> list[dict]:
-    session = _get_session(data_dir, session_id)
-    try:
-        return session.get_spans()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading trace: {str(e)}")
+    return _get_session(data_dir, session_id).get_spans()
 
 
+@_explains_damaged_session
 async def _handle_get_session_trace(data_dir: Path, session_id: str) -> JSONResponse:
     spans = _get_session_spans(data_dir, session_id)
     adapter = get_adapter(spans)
@@ -135,11 +171,7 @@ async def _handle_get_session_trace(data_dir: Path, session_id: str) -> JSONResp
     )
 
 
-def _get_session_logs_raw(data_dir: Path, session_id: str) -> list[dict]:
-    session = _get_session(data_dir, session_id)
-    return session.get_logs()
-
-
+@_explains_damaged_session
 async def _handle_get_session_raw(data_dir: Path, session_id: str) -> JSONResponse:
     session = _get_session(data_dir, session_id)
     spans = session.get_spans()
@@ -161,15 +193,12 @@ async def _handle_get_session_raw(data_dir: Path, session_id: str) -> JSONRespon
     )
 
 
+@_explains_damaged_session
 async def _handle_get_session_logs(
     data_dir: Path, session_id: str, limit: int
 ) -> JSONResponse:
     session = _get_session(data_dir, session_id)
-
-    try:
-        logs = session.get_logs()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading logs: {str(e)}")
+    logs = session.get_logs()
 
     logs.sort(key=lambda log: int(log.get("time_unix_nano", 0)))
     total_count = len(logs)
@@ -184,6 +213,7 @@ async def _handle_get_session_logs(
     )
 
 
+@_explains_damaged_session
 async def _handle_get_session_conversation(
     data_dir: Path, session_id: str
 ) -> JSONResponse:
@@ -210,24 +240,32 @@ async def _handle_get_session_conversation(
     )
 
 
+@_explains_damaged_session
 async def _handle_get_session_audio(
     data_dir: Path,
     session_id: str,
-    background_tasks: BackgroundTasks,
     as_download: bool = False,
 ) -> FileResponse:
-    audio_path, media_type, is_temp = _get_combined_audio_file(
-        data_dir, session_id, background_tasks
-    )
     disposition = "attachment" if as_download else "inline"
-    extension = audio_path.suffix
 
-    return FileResponse(
-        str(audio_path),
-        media_type=media_type,
-        headers={
+    def headers(extension: str) -> dict[str, str]:
+        return {
             "Content-Disposition": f"{disposition}; filename=session_{session_id}{extension}"
-        },
+        }
+
+    finalized = _get_finalized_audio_file(data_dir, session_id)
+    if finalized:
+        media_type = _FINALIZED_AUDIO_MEDIA_TYPES.get(
+            finalized.suffix, "application/octet-stream"
+        )
+        return FileResponse(
+            str(finalized), media_type=media_type, headers=headers(finalized.suffix)
+        )
+
+    chunks = _find_session_chunks(data_dir, session_id)
+    merged_audio = await run_in_threadpool(combine_chunks_to_temp_file, chunks)
+    return TempPathResponse(
+        str(merged_audio), media_type="audio/wav", headers=headers(".wav")
     )
 
 
@@ -256,7 +294,7 @@ async def _handle_get_session_audio_status(
 
     last_modified = None
     if chunks:
-        last_modified = max(Path(c).stat().st_mtime for c in chunks)
+        last_modified = max(chunk_path.stat().st_mtime for _, chunk_path in chunks)
 
     return JSONResponse(
         {
@@ -268,17 +306,18 @@ async def _handle_get_session_audio_status(
 
 
 async def _handle_upload_session(
-    sessions_base_dir: Path, file: UploadFile
+    sessions_base_dir: Path, file: UploadFile, max_upload_bytes: int
 ) -> JSONResponse:
-    zip_bytes = await file.read()
-
-    session, error_msg = Session.from_zip(zip_bytes, sessions_base_dir)
+    session, error_msg = await run_in_threadpool(
+        Session.from_zip, file.file, sessions_base_dir, max_upload_bytes
+    )
     if error_msg:
         raise HTTPException(status_code=400, detail=error_msg)
 
     return JSONResponse({"success": True, "session_id": session.session_id})
 
 
+@_explains_damaged_session
 async def _handle_get_session_exceptions(
     data_dir: Path, session_id: str
 ) -> JSONResponse:
@@ -286,26 +325,35 @@ async def _handle_get_session_exceptions(
     return JSONResponse({"exceptions": session.get_exceptions()})
 
 
+@_explains_damaged_session
 async def _handle_get_session_metrics(data_dir: Path, session_id: str) -> JSONResponse:
-    spans = _get_session_spans(data_dir, session_id)
-    metrics = Metrics(spans)
+    session = _get_session(data_dir, session_id)
+    spans = session.get_spans()
+    adapter = get_adapter(spans)
+    normalized_spans = adapter.normalize_spans(spans)
+    trace_messages = Conversation(normalized_spans).to_dict_list()
+    report = load_livekit_report(session.session_dir)
+    report_message_list = report_messages(report, trace_messages) if report else []
+    usage = report_usage(report) if report else []
+    metrics = Metrics(normalized_spans, report_messages=report_message_list, usage=usage)
     return JSONResponse(metrics.to_dict())
 
 
 async def _handle_download_session(
     data_dir: Path, session_id: str
-) -> StreamingResponse:
+) -> TempFileResponse:
     session = _get_session(data_dir, session_id)
-    zip_buffer = session.to_zip()
-    return StreamingResponse(
-        zip_buffer,
+    zip_file = await run_in_threadpool(session.to_zip)
+    return TempFileResponse(
+        zip_file,
         media_type="application/zip",
         headers={
-            "Content-Disposition": f"attachment; filename=finchvox_session_{session_id}.zip"
+            "Content-Disposition": f"attachment; filename=finchvox_session_{session_id}.zip",
         },
     )
 
 
+@_explains_damaged_session
 async def _handle_get_session_environment(
     data_dir: Path, session_id: str
 ) -> JSONResponse:
@@ -318,7 +366,11 @@ async def _handle_get_session_environment(
     return JSONResponse(json.loads(env_file.read_text()))
 
 
-def register_ui_routes(app: FastAPI, data_dir: Path = None):
+def register_ui_routes(
+    app: FastAPI,
+    data_dir: Path | None = None,
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+):
     if data_dir is None:
         data_dir = get_default_data_dir()
 
@@ -344,7 +396,7 @@ def register_ui_routes(app: FastAPI, data_dir: Path = None):
 
     @app.get("/api/sessions")
     async def list_sessions() -> JSONResponse:
-        return await _handle_list_sessions(sessions_base_dir)
+        return await _handle_list_sessions(sessions_base_dir, max_upload_bytes)
 
     @app.get("/api/sessions/{session_id}/trace")
     async def get_session_trace(session_id: str) -> JSONResponse:
@@ -367,8 +419,8 @@ def register_ui_routes(app: FastAPI, data_dir: Path = None):
         return await _handle_get_session_exceptions(data_dir, session_id)
 
     @app.get("/api/sessions/{session_id}/audio")
-    async def get_session_audio(session_id: str, background_tasks: BackgroundTasks):
-        return await _handle_get_session_audio(data_dir, session_id, background_tasks)
+    async def get_session_audio(session_id: str):
+        return await _handle_get_session_audio(data_dir, session_id)
 
     @app.get("/api/sessions/{session_id}/audio/status")
     async def get_session_audio_status(session_id: str) -> JSONResponse:
@@ -376,23 +428,17 @@ def register_ui_routes(app: FastAPI, data_dir: Path = None):
 
     @app.get("/api/sessions/{session_id}/metrics")
     async def get_session_metrics(session_id: str) -> JSONResponse:
-        session = _get_session(data_dir, session_id)
-        spans = session.get_spans()
-        adapter = get_adapter(spans)
-        normalized_spans = adapter.normalize_spans(spans)
-        trace_messages = Conversation(normalized_spans).to_dict_list()
-        report = load_livekit_report(session.session_dir)
-        report_message_list = report_messages(report, trace_messages) if report else []
-        metrics = Metrics(normalized_spans, report_messages=report_message_list)
-        return JSONResponse(metrics.to_dict())
+        return await _handle_get_session_metrics(data_dir, session_id)
 
     @app.get("/api/sessions/{session_id}/download")
     async def download_session(session_id: str):
         return await _handle_download_session(data_dir, session_id)
 
     @app.post("/api/sessions/upload")
-    async def upload_session(file: UploadFile = File(...)):
-        return await _handle_upload_session(sessions_base_dir, file)
+    async def upload_session(file: Annotated[UploadFile, File()]):
+        return await _handle_upload_session(sessions_base_dir, file, max_upload_bytes)
+
+    limit_latest_route_body(app, max_upload_bytes)
 
     @app.get("/api/sessions/{session_id}/environment")
     async def get_session_environment(session_id: str):
