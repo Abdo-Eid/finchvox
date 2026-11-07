@@ -43,6 +43,7 @@ function sessionDetailApp() {
         expandedSpanIds: new Set(), // Set of span IDs that are expanded
         expansionInitialized: false, // Flag to ensure we only auto-expand on first load
         isWaterfallExpanded: false, // Global expand/collapse state for the waterfall
+        showAllSpans: false,    // Also list spans the platform adapter marks hidden
         selectedSpan: null,      // Span shown in the details panel
         highlightedSpan: null,   // Span highlighted in the waterfall (for keyboard navigation)
         hoveredSpan: null,       // Span being hovered over (for chunk highlighting)
@@ -116,6 +117,7 @@ function sessionDetailApp() {
 
             this.initAudioPlayer();
             this.initKeyboardShortcuts();
+            this.initTimelineResize();
             this.initCleanup();
 
             const hashParams = new URLSearchParams(window.location.hash.split('?')[1] || '');
@@ -171,16 +173,31 @@ function sessionDetailApp() {
             }
         },
 
+        isSpanShownInTree(span) {
+            return this.showAllSpans || !span._normalized?.hidden;
+        },
+
+        // The nearest ancestor shown in the tree, so hiding a wrapper span
+        // (LiveKit's job_entrypoint or llm_node) moves its children up a level.
+        shownParentId(span, spansById) {
+            const visited = new Set();
+            let parent = spansById.get(span.parent_span_id_hex);
+            while (parent && !this.isSpanShownInTree(parent) && !visited.has(parent.span_id_hex)) {
+                visited.add(parent.span_id_hex);
+                parent = spansById.get(parent.parent_span_id_hex);
+            }
+            return parent && this.isSpanShownInTree(parent) ? parent.span_id_hex : null;
+        },
+
         buildSpanHierarchy() {
             const childrenMap = {};
             const rootSpans = [];
-            const spanIds = new Set(this.spans.map(s => s.span_id_hex));
+            const spansById = new Map(this.spans.map(s => [s.span_id_hex, s]));
 
-            this.spans.forEach(span => {
-                const parentId = span.parent_span_id_hex;
-                const isRootOrOrphan = !parentId || !spanIds.has(parentId);
+            this.spans.filter(span => this.isSpanShownInTree(span)).forEach(span => {
+                const parentId = this.shownParentId(span, spansById);
 
-                if (isRootOrOrphan) {
+                if (!parentId) {
                     rootSpans.push(span);
                 } else {
                     if (!childrenMap[parentId]) childrenMap[parentId] = [];
@@ -266,32 +283,41 @@ function sessionDetailApp() {
         },
 
         expandAll() {
-            // Expand all spans with children
-            this.spans.forEach(span => {
-                // Find children for this span
-                const children = this.spans.filter(s => s.parent_span_id_hex === span.span_id_hex);
-                if (children.length > 0) {
-                    this.expandedSpanIds.add(span.span_id_hex);
-                }
-            });
+            const { childrenMap } = this.buildSpanHierarchy();
+            Object.keys(childrenMap).forEach(spanId => this.expandedSpanIds.add(spanId));
 
             this.isWaterfallExpanded = true;
             this.buildWaterfallTree();
         },
 
         collapseAll() {
+            const { childrenMap } = this.buildSpanHierarchy();
             this.expandedSpanIds.clear();
 
             this.spans.forEach(span => {
-                if (span._normalized?.category === 'root') {
-                    const children = this.spans.filter(s => s.parent_span_id_hex === span.span_id_hex);
-                    if (children.length > 0) {
-                        this.expandedSpanIds.add(span.span_id_hex);
-                    }
+                if (span._normalized?.category === 'root' && childrenMap[span.span_id_hex]) {
+                    this.expandedSpanIds.add(span.span_id_hex);
                 }
             });
 
             this.isWaterfallExpanded = false;
+            this.buildWaterfallTree();
+        },
+
+        hasHiddenSpans() {
+            return this.spans.some(span => span._normalized?.hidden);
+        },
+
+        toggleShowAllSpans() {
+            this.showAllSpans = !this.showAllSpans;
+            if (this.showAllSpans) {
+                // Open the wrapper spans that appear, so the spans already
+                // listed stay visible beneath them.
+                const { childrenMap } = this.buildSpanHierarchy();
+                this.spans
+                    .filter(span => span._normalized?.hidden && childrenMap[span.span_id_hex])
+                    .forEach(span => this.expandedSpanIds.add(span.span_id_hex));
+            }
             this.buildWaterfallTree();
         },
 
@@ -506,8 +532,9 @@ function sessionDetailApp() {
 
             timeline.innerHTML = ''; // Clear existing
 
-            // Show exactly 15 equally-spaced markers
-            const markerCount = 15;
+            // Up to 15 equally spaced markers, about one per 70 px so labels
+            // never overlap on narrow screens.
+            const markerCount = Math.max(2, Math.min(15, Math.floor(timeline.clientWidth / 70)));
             const interval = this.duration / markerCount;
 
             // Create timeline container with relative positioning
@@ -550,7 +577,7 @@ function sessionDetailApp() {
                     label.style.transform = 'translateX(-50%)';
                 }
 
-                label.style.fontSize = '10px';
+                label.style.fontSize = '12px';
                 label.style.color = '#9ca3af';
                 label.style.fontFamily = 'monospace';
                 label.textContent = this.formatTimelineLabel(time);
@@ -638,6 +665,19 @@ function sessionDetailApp() {
             document.addEventListener('keydown', this.keyboardHandler);
         },
 
+        // Redraw the time labels when the window width changes.
+        initTimelineResize() {
+            const timeline = document.getElementById('timeline');
+            if (!timeline || this.timelineResizeObserver) return;
+            let lastWidth = timeline.clientWidth;
+            this.timelineResizeObserver = new ResizeObserver(() => {
+                if (timeline.clientWidth === lastWidth) return;
+                lastWidth = timeline.clientWidth;
+                this.generateTimeline();
+            });
+            this.timelineResizeObserver.observe(timeline);
+        },
+
         initCleanup() {
             if (this.pageHideHandler) return;
             this.pageHideHandler = (event) => {
@@ -659,6 +699,8 @@ function sessionDetailApp() {
             this.pageHideHandler = null;
             this.waveformHoverEvents?.abort();
             this.waveformHoverEvents = null;
+            this.timelineResizeObserver?.disconnect();
+            this.timelineResizeObserver = null;
             const player = this.getAudioPlayer();
             this.audioPlayer = null;
             player?.destroy();
@@ -951,19 +993,13 @@ function sessionDetailApp() {
             return latencySeconds !== null && latencySeconds >= 2.0;
         },
 
-        // Format user-bot latency value for display with turtle icon if slow
+        // Plain text (shown with x-text), marking replies of 2 s or more as slow.
         formatUserBotLatency(span) {
             const latencySeconds = this.getUserBotLatency(span);
             if (latencySeconds === null) return '';
 
-            // Convert seconds to milliseconds and format
             const formattedTime = formatDuration(latencySeconds * 1000);
-
-            if (latencySeconds >= 2.0) {
-                return `${formattedTime} ${getIcon('turtle')}`;
-            }
-
-            return formattedTime;
+            return this.isSlowLatency(span) ? `${formattedTime} · slow` : formattedTime;
         },
 
         // Get interruption status from span attributes
@@ -1671,6 +1707,7 @@ function sessionDetailApp() {
         },
 
         expandToSpan(span) {
+            if (!this.isSpanShownInTree(span)) this.showAllSpans = true;
             let currentSpanId = span.parent_span_id_hex;
             while (currentSpanId) {
                 const parent = this.spans.find(s => s.span_id_hex === currentSpanId);

@@ -72,6 +72,14 @@ class TestConfiguration:
         assert len(installs) == 2
         assert all("${SKIP_PACKAGES}" in line for line in installs)
 
+    def test_finchvox_is_rebuilt_from_the_copied_source(self):
+        # uv's build cache is keyed on pyproject.toml, so without this a rebuild
+        # reuses the previous Finchvox wheel and serves stale code and UI files.
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        project_install = [line for line in dockerfile.splitlines() if "uv sync" in line][-1]
+
+        assert "--reinstall-package finchvox" in project_install
+
     def test_build_context_leaves_out_unrelated_folders(self):
         ignored = (ROOT / ".dockerignore").read_text().split()
 
@@ -181,6 +189,9 @@ class TestContainerSmoke:
         for path in ("/", "/js/session_detail.js"):
             with urllib.request.urlopen(f"{base_url}{path}", timeout=10) as response:
                 assert response.status == 200
+        # ...and they are this checkout's files, not a cached earlier build.
+        with urllib.request.urlopen(f"{base_url}/css/app.css", timeout=10) as response:
+            assert response.read() == (ROOT / "ui" / "css" / "app.css").read_bytes()
 
         # A span sent from this machine becomes a session.
         trace_id = self._send_span(grpc_port)

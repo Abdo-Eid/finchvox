@@ -13,50 +13,59 @@
 <body class="insights-body" x-data="sessionDetailApp()">
 <div class="min-h-screen flex bg-[#08090b] text-[#e7e9ee]">
     <div class="flex-1 min-w-0 h-screen overflow-y-auto transition-[margin] duration-300"
-         :class="(isPanelOpen || isLogPanelOpen) ? 'mr-[460px]' : ''">
+         :class="(isPanelOpen || isLogPanelOpen) ? 'with-inspector' : ''">
 
         <!-- Sticky session chrome: inspired by a voice debugger, branded as Finchvox. -->
         <div class="sticky top-0 z-40 bg-[#08090b]/[0.98] backdrop-blur border-b border-white/[0.07]">
-            <header class="h-[48px] px-6 flex items-center justify-between border-b border-white/[0.07]">
-                <div class="flex items-center gap-2.5 min-w-0 text-[12px]">
-                    <a href="/" class="flex items-center gap-2 text-white/55 hover:text-white/80 no-underline shrink-0">
+            <header class="page-gutter h-[48px] flex items-center justify-between gap-3 border-b border-white/[0.07]">
+                <div class="flex items-center gap-2.5 min-w-0 text-[14px]">
+                    <a href="/" class="flex items-center gap-2 text-white/55 hover:text-white/80 no-underline shrink-0" title="All sessions">
                         <img src="/images/finchvox-logo.png" alt="Finchvox" class="h-[18px] w-auto opacity-90">
-                        <span>Sessions</span>
+                        <span class="crumb-detail">Sessions</span>
                     </a>
                     <span class="text-white/20">/</span>
                     <span class="truncate text-white/75" x-text="serviceName || getSessionAgentLabel()"></span>
-                    <span class="text-white/20">/</span>
-                    <span class="truncate font-mono text-white/45" x-text="sessionId"></span>
+                    <span class="text-white/20 crumb-detail">/</span>
+                    <span class="truncate font-mono text-white/45 crumb-detail" x-text="sessionId"></span>
                     <span x-show="platform === 'livekit'" class="source-badge">LIVEKIT</span>
                     <span x-show="isPolling" class="live-badge">Live</span>
                 </div>
-                <div class="flex items-center gap-2">
-                    <a :href="'/api/sessions/' + sessionId + '/raw'" target="_blank" class="chrome-button">Raw</a>
-                    <a :href="'/api/sessions/' + sessionId + '/download'" download class="chrome-button" title="Download session">↓</a>
+                <div class="flex items-center gap-2 shrink-0">
+                    <a :href="'/api/sessions/' + sessionId + '/raw'" target="_blank" class="chrome-button" title="Raw session JSON">
+                        <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#braces"/></svg><span class="crumb-detail">Raw</span>
+                    </a>
+                    <a :href="'/api/sessions/' + sessionId + '/download'" download class="chrome-button" title="Download session" aria-label="Download session">
+                        <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#download"/></svg>
+                    </a>
                 </div>
             </header>
 
-            <div class="h-[42px] px-6 flex items-center gap-6 text-xs border-b border-white/[0.07]">
+            <div class="page-gutter h-[42px] flex items-center gap-6 text-sm border-b border-white/[0.07]">
                 <button class="session-mode-tab" :class="!isAgentInsightsView() ? 'active' : ''" @click="switchView('metrics')">Session analytics</button>
                 <button class="session-mode-tab" :class="isAgentInsightsView() ? 'active' : ''" @click="switchView('conversation')">Agent insights</button>
-                <span x-show="getSessionRoomName()" class="ml-auto font-mono text-[11px] text-white/35 truncate max-w-[360px]" x-text="getSessionRoomName()"></span>
+                <span x-show="getSessionRoomName()" class="ml-auto font-mono text-[13px] text-white/35 truncate max-w-[360px] crumb-detail" x-text="getSessionRoomName()"></span>
             </div>
 
-            <section class="px-6 pt-3 pb-0 bg-[#0a0b0e]">
+            <section class="page-gutter pt-3 pb-0 bg-[#0a0b0e]">
                 <div class="flex items-center justify-between gap-5 mb-2">
                     <div class="flex items-center gap-1.5">
-                        <button class="player-icon-button" @click="skipBackward(5)" :disabled="audioError" title="Back 5 seconds">↶</button>
-                        <button class="player-play-button" @click="!audioError && togglePlay()" :disabled="audioError" title="Play / Pause">
-                            <span x-show="!playing">▶</span><span x-show="playing">Ⅱ</span>
+                        <button class="player-icon-button" @click="skipBackward(5)" :disabled="audioError" title="Back 5 seconds" aria-label="Back 5 seconds">
+                            <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#back-5"/></svg>
                         </button>
-                        <button class="player-icon-button" @click="skipForward(5)" :disabled="audioError" title="Forward 5 seconds">↷</button>
-                        <div class="ml-2 font-mono text-[11px] text-white/55 tabular-nums">
+                        <button class="player-play-button" @click="!audioError && togglePlay()" :disabled="audioError" title="Play / Pause" :aria-label="playing ? 'Pause' : 'Play'">
+                            <svg x-show="!playing" class="icon" aria-hidden="true"><use href="/images/icons.svg#play"/></svg>
+                            <svg x-show="playing" class="icon" aria-hidden="true"><use href="/images/icons.svg#pause"/></svg>
+                        </button>
+                        <button class="player-icon-button" @click="skipForward(5)" :disabled="audioError" title="Forward 5 seconds" aria-label="Forward 5 seconds">
+                            <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#forward-5"/></svg>
+                        </button>
+                        <div class="ml-2 font-mono text-[13px] text-white/55 tabular-nums">
                             <span class="text-white/85" x-text="formatTime(currentTime)"></span>
                             <span class="mx-1 text-white/25">/</span>
                             <span x-text="formatTime(duration)"></span>
                         </div>
                     </div>
-                    <div class="flex items-center gap-4 text-[11px]">
+                    <div class="flex items-center gap-4 text-[13px]">
                         <span class="wave-legend"><i class="wave-dot wave-dot-user"></i>User</span>
                         <span class="wave-legend"><i class="wave-dot wave-dot-agent"></i>Agent</span>
                     </div>
@@ -72,7 +81,7 @@
                             </template>
                             <div class="global-playhead" :style="getPlayheadStyle()"></div>
                         </div>
-                        <div x-show="audioError" x-cloak class="absolute inset-0 z-10 flex items-center justify-center gap-2 text-[11px] text-white/45 bg-[#0a0b0e]/90">
+                        <div x-show="audioError" x-cloak class="absolute inset-0 z-10 flex items-center justify-center gap-2 text-[13px] text-white/45 bg-[#0a0b0e]/90">
                             <span class="text-amber-300">Audio unavailable</span>
                             <span>— traces, transcript and logs remain usable.</span>
                         </div>
@@ -110,7 +119,7 @@
 
         <!-- Transcript / synchronized replay -->
         <main x-show="selectedView === 'conversation'" class="view-surface">
-            <div class="max-w-[820px] mx-auto px-6 py-8">
+            <div class="page-gutter max-w-[820px] mx-auto py-8">
                 <div x-show="conversationLoading" class="empty-state">Loading transcript…</div>
                 <div x-show="conversationError" class="empty-state text-red-300" x-text="conversationError"></div>
                 <div x-show="!conversationLoading && !conversationError && getTranscriptFeedItems().length === 0" class="empty-state">
@@ -125,7 +134,9 @@
                                         :class="`event-${item.event.kind}`"
                                         @click="selectInsightEvent(item.event)"
                                         @mouseenter="showMarkerAtSpan(item.event.span)" @mouseleave="hideMarkerFromWaterfall()">
-                                    <div class="event-icon" x-text="item.event.kind === 'tool' ? '⌘' : item.event.kind === 'handoff' ? '↔' : item.event.kind === 'config' ? '⚙' : '!' "></div>
+                                    <div class="event-icon">
+                                        <svg class="icon" aria-hidden="true"><use :href="`/images/icons.svg#${['tool', 'handoff', 'config'].includes(item.event.kind) ? item.event.kind : 'alert'}`"/></svg>
+                                    </div>
                                     <div class="min-w-0 flex-1 text-left">
                                         <div class="truncate font-medium" x-text="item.event.title"></div>
                                         <div x-show="item.event.subtitle" class="truncate text-white/35 mt-0.5" x-text="item.event.subtitle"></div>
@@ -139,8 +150,9 @@
                                         :class="item.message.role === 'user' ? 'transcript-user' : 'transcript-assistant'"
                                         @click="selectConversationMessage(item.message)"
                                         @mouseenter="seekToMessage(item.message)" @mouseleave="hideConversationMarker()">
-                                    <div class="message-avatar" :class="item.message.role === 'user' ? 'avatar-user' : 'avatar-agent'"
-                                         x-text="item.message.role === 'user' ? 'U' : 'A'"></div>
+                                    <div class="message-avatar" :class="item.message.role === 'user' ? 'avatar-user' : 'avatar-agent'">
+                                        <svg class="icon" aria-hidden="true"><use :href="`/images/icons.svg#${item.message.role === 'user' ? 'user' : 'bot'}`"/></svg>
+                                    </div>
                                     <div class="min-w-0 flex-1 text-left">
                                         <div class="flex items-center gap-2 mb-1.5">
                                             <span class="message-role" x-text="item.message.role === 'user' ? 'User' : getSessionAgentLabel()"></span>
@@ -166,12 +178,16 @@
         <!-- Hierarchical trace waterfall -->
         <main x-show="selectedView === 'trace'" class="view-surface trace-view">
             <div class="trace-toolbar">
-                <div class="flex items-center gap-4 text-[11px] text-white/35">
+                <div class="flex items-center gap-4 text-[13px] text-white/35">
                     <span><span class="text-white/70" x-text="waterfallSpans.length"></span> visible spans</span>
                     <span x-show="getTraceErrorCount() > 0" class="trace-error-count"><span x-text="getTraceErrorCount()"></span> errors</span>
                 </div>
-                <button class="chrome-button" @click="toggleWaterfallExpansion()" x-text="isWaterfallExpanded ? 'Collapse all' : 'Expand all'"></button>
+                <div class="flex items-center gap-2">
+                    <button class="chrome-button" x-show="hasHiddenSpans()" @click="toggleShowAllSpans()" x-text="showAllSpans ? 'Show main spans' : 'Show all spans'"></button>
+                    <button class="chrome-button" @click="toggleWaterfallExpansion()" x-text="isWaterfallExpanded ? 'Collapse all' : 'Expand all'"></button>
+                </div>
             </div>
+            <div class="trace-scroll">
             <div class="trace-table">
                 <div class="trace-header-row">
                     <div class="trace-name-col">Span</div>
@@ -187,12 +203,14 @@
                          :data-span-id="span.span_id_hex"
                          @mouseenter="highlightSpan(span)" @mouseleave="unhighlightSpan()">
                         <button class="trace-name-col trace-label-button" @click="selectSpan(span, true)" :style="`padding-left:${14 + (span.depth || 0) * 18}px`">
-                            <span class="tree-toggle" @click.stop="toggleSpanExpansion(span)" :class="span.childCount ? '' : 'invisible'"
-                                  x-text="expandedSpanIds.has(span.span_id_hex) ? '⌄' : '›'"></span>
+                            <span class="tree-toggle" @click.stop="toggleSpanExpansion(span)"
+                                  :class="[span.childCount ? '' : 'invisible', expandedSpanIds.has(span.span_id_hex) ? 'expanded' : '']">
+                                <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#chevron-right"/></svg>
+                            </span>
                             <span class="span-status-dot" :class="hasException(span) ? 'error' : (span._normalized?.category || 'other')"></span>
                             <span class="min-w-0">
                                 <span class="block truncate text-white/80" x-text="getSpanDisplayName(span)"></span>
-                                <span x-show="getSpanSubtitle(span)" class="block truncate text-[10px] text-white/30 mt-0.5" x-text="getSpanSubtitle(span)"></span>
+                                <span x-show="getSpanSubtitle(span)" class="block truncate text-[12px] text-white/30 mt-0.5" x-text="getSpanSubtitle(span)"></span>
                             </span>
                         </button>
                         <div class="trace-track-col trace-track" @click="selectSpan(span, true)">
@@ -208,13 +226,15 @@
                     </div>
                 </template>
             </div>
+            </div>
         </main>
 
         <!-- Logs -->
         <main x-show="selectedView === 'logs'" class="view-surface">
             <div class="logs-toolbar">
-                <div class="relative min-w-[260px] max-w-[420px] flex-1">
-                    <input x-model="logSearchQuery" type="text" placeholder="Filter logs…" class="insights-input w-full">
+                <div class="logs-search">
+                    <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#search"/></svg>
+                    <input x-model="logSearchQuery" type="text" placeholder="Filter logs…" class="insights-input w-full" aria-label="Filter logs">
                 </div>
                 <div class="flex gap-1.5">
                     <template x-for="level in ['DEBUG','INFO','WARN','ERROR']" :key="level">
@@ -226,14 +246,14 @@
             <div x-show="!logsLoading && logs.length === 0" class="empty-state">No correlated logs for this session.</div>
             <div class="overflow-auto" x-show="!logsLoading && getFilteredLogs().length > 0">
                 <table class="insights-log-table">
-                    <thead><tr><th class="w-[110px]">Time</th><th class="w-[85px]">Level</th><th class="w-[190px]">Logger</th><th>Message</th></tr></thead>
+                    <thead><tr><th class="w-[110px]">Time</th><th class="w-[85px]">Level</th><th class="w-[190px] log-logger-col">Logger</th><th>Message</th></tr></thead>
                     <tbody>
                     <template x-for="(log, index) in getFilteredLogs()" :key="`${log.time_unix_nano}-${index}`">
                         <tr :data-log-index="index" @click="selectLog(log, index)" @mouseenter="highlightLog(log)" @mouseleave="unhighlightLog()"
                             :class="selectedLog === log ? 'selected' : ''">
                             <td class="font-mono text-white/35" x-text="formatLogRelativeTime(log.time_unix_nano)"></td>
                             <td class="font-mono" :class="getLogLevelClass(log.severity_text)" x-text="log.severity_text || 'INFO'"></td>
-                            <td class="font-mono text-white/38 truncate" x-text="getLogLogger(log)"></td>
+                            <td class="font-mono text-white/38 truncate log-logger-col" x-text="getLogLogger(log)"></td>
                             <td class="font-mono text-white/75 truncate max-w-0" x-text="getLogBody(log)"></td>
                         </tr>
                     </template>
@@ -243,7 +263,7 @@
         </main>
 
         <!-- Metrics -->
-        <main x-show="selectedView === 'metrics'" class="view-surface px-6 py-6">
+        <main x-show="selectedView === 'metrics'" class="view-surface page-gutter py-6">
             <div x-show="metricsLoading" class="empty-state">Loading metrics…</div>
             <div x-show="metricsError" class="empty-state text-red-300" x-text="metricsError"></div>
             <div x-show="metricsData && metricsData.services?.length === 0 && !metricsData.user_bot_latency" class="empty-state">No latency metrics in this session.</div>
@@ -267,7 +287,7 @@
                 <template x-for="(breakdown, name) in (metricsData?.turn_breakdown || {})" :key="name">
                     <div class="metric-card compact">
                         <div class="metric-kicker" x-text="name.replaceAll('_',' ')"></div>
-                        <div class="flex items-end justify-between mt-2"><div class="text-2xl font-mono" x-text="`${breakdown.stats.avg_ms.toFixed(0)} ms`"></div><div class="text-[11px] text-white/35" x-text="`p95 ${breakdown.stats.p95_ms.toFixed(0)} ms · n=${breakdown.stats.count}`"></div></div>
+                        <div class="flex items-end justify-between mt-2"><div class="text-2xl font-mono" x-text="`${breakdown.stats.avg_ms.toFixed(0)} ms`"></div><div class="text-[13px] text-white/35" x-text="`p95 ${breakdown.stats.p95_ms.toFixed(0)} ms · n=${breakdown.stats.count}`"></div></div>
                     </div>
                 </template>
                 <div x-show="metricsData?.event_loop_blocks?.length" class="metric-card">
@@ -276,7 +296,7 @@
                         <div class="metric-stat"><span>worst</span><strong x-text="`${getWorstEventLoopBlockMs().toFixed(0)} ms`"></strong></div>
                     </div>
                     <template x-for="block in (metricsData?.event_loop_blocks || [])" :key="block.span_id">
-                        <div role="button" tabindex="0" style="cursor:pointer" class="flex w-full justify-between border-b border-white/[0.04] py-1 font-mono text-[11px]" @click="selectMetricsSpan(block.span_id)" @keydown.enter="selectMetricsSpan(block.span_id)">
+                        <div role="button" tabindex="0" style="cursor:pointer" class="flex w-full justify-between border-b border-white/[0.04] py-1 font-mono text-[13px]" @click="selectMetricsSpan(block.span_id)" @keydown.enter="selectMetricsSpan(block.span_id)">
                             <span class="text-white/60" x-text="`${formatMetricsTime(block.relative_time_ms / 1000)} · ${block.task || 'unknown task'}`"></span>
                             <span :class="block.severity === 'error' ? 'text-red-300' : 'text-white/40'" x-text="`${block.duration_ms.toFixed(0)} ms`"></span>
                         </div>
@@ -285,13 +305,13 @@
                 <div x-show="Object.keys(metricsData?.job_dispatch || {}).length" class="metric-card">
                     <div class="metric-card-header"><div><div class="metric-kicker">Job dispatch</div><div class="metric-title">Time to start the agent</div></div></div>
                     <template x-for="(milliseconds, stage) in (metricsData?.job_dispatch || {})" :key="stage">
-                        <div class="flex justify-between border-b border-white/[0.04] py-1 font-mono text-[11px]"><span class="text-white/60" x-text="stage"></span><span class="text-white/40" x-text="`${milliseconds.toFixed(0)} ms`"></span></div>
+                        <div class="flex justify-between border-b border-white/[0.04] py-1 font-mono text-[13px]"><span class="text-white/60" x-text="stage"></span><span class="text-white/40" x-text="`${milliseconds.toFixed(0)} ms`"></span></div>
                     </template>
                 </div>
                 <div x-show="metricsData?.usage?.length" class="metric-card">
                     <div class="metric-card-header"><div><div class="metric-kicker">SessionReport</div><div class="metric-title">Model usage</div></div></div>
                     <template x-for="row in (metricsData?.usage || [])" :key="`${row.kind}-${row.provider}-${row.model}`">
-                        <div class="border-b border-white/[0.04] py-2 font-mono text-[11px]">
+                        <div class="border-b border-white/[0.04] py-2 font-mono text-[13px]">
                             <div class="flex justify-between"><span class="text-white/70" x-text="`${row.kind.toUpperCase()} · ${row.provider}/${row.model}`"></span></div>
                             <div class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-white/40">
                                 <template x-for="amount in usageAmounts(row)" :key="amount.label"><span x-text="`${amount.label}: ${amount.value}`"></span></template>
@@ -303,14 +323,14 @@
         </main>
 
         <!-- Environment -->
-        <main x-show="selectedView === 'environment'" class="view-surface px-6 py-6">
+        <main x-show="selectedView === 'environment'" class="view-surface page-gutter py-6">
             <div x-show="environmentLoading" class="empty-state">Loading environment…</div>
             <div x-show="environmentError" class="empty-state" x-text="environmentError"></div>
             <div x-show="environmentData" class="max-w-4xl space-y-4">
                 <div class="metric-card compact"><div class="metric-kicker">Operating system</div><div class="mt-2 font-mono" x-text="formatOS()"></div></div>
                 <div class="metric-card compact"><div class="metric-kicker">Python</div><div class="mt-2 font-mono" x-text="formatPython()"></div></div>
                 <div class="metric-card"><div class="metric-title mb-4">Packages</div><div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5">
-                    <template x-for="(packageVersion, packageName) in getSortedPackages()" :key="packageName"><div class="flex justify-between border-b border-white/[0.04] py-1 font-mono text-[11px]"><span class="text-white/60" x-text="packageName"></span><span class="text-white/30" x-text="packageVersion"></span></div></template>
+                    <template x-for="(packageVersion, packageName) in getSortedPackages()" :key="packageName"><div class="flex justify-between border-b border-white/[0.04] py-1 font-mono text-[13px]"><span class="text-white/60" x-text="packageName"></span><span class="text-white/30" x-text="packageVersion"></span></div></template>
                 </div></div>
             </div>
         </main>
@@ -321,8 +341,8 @@
            x-transition:enter="transition ease-out duration-200" x-transition:enter-start="translate-x-full" x-transition:enter-end="translate-x-0"
            x-transition:leave="transition ease-in duration-150" x-transition:leave-start="translate-x-0" x-transition:leave-end="translate-x-full">
         <div class="inspector-header">
-            <div class="min-w-0"><div class="text-[10px] uppercase tracking-[0.15em] text-white/30 mb-1" x-text="selectedSpan?._normalized?.report_only ? 'Inspect session event' : 'Inspect span'"></div><h2 class="truncate" x-text="getSpanDisplayName(selectedSpan)"></h2></div>
-            <button @click="closePanel()" class="inspector-close">×</button>
+            <div class="min-w-0"><div class="text-[12px] uppercase tracking-[0.15em] text-white/30 mb-1" x-text="selectedSpan?._normalized?.report_only ? 'Inspect session event' : 'Inspect span'"></div><h2 class="truncate" x-text="getSpanDisplayName(selectedSpan)"></h2></div>
+            <button @click="closePanel()" class="inspector-close" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="/images/icons.svg#close"/></svg></button>
         </div>
         <div class="inspector-content" x-show="selectedSpan">
             <div class="inspector-summary-grid">
@@ -334,7 +354,7 @@
 
             <div x-show="getSpanErrors(selectedSpan).length" class="inspector-section error-box">
                 <div class="inspector-section-title text-red-300">Errors</div>
-                <template x-for="error in getSpanErrors(selectedSpan)" :key="error"><div class="font-mono text-[11px] whitespace-pre-wrap text-red-200/85" x-text="error"></div></template>
+                <template x-for="error in getSpanErrors(selectedSpan)" :key="error"><div class="font-mono text-[13px] whitespace-pre-wrap text-red-200/85" x-text="error"></div></template>
             </div>
 
             <div x-show="getChildErrors(selectedSpan).length" class="inspector-section error-box">
@@ -388,7 +408,7 @@
     <aside class="inspector-panel" x-show="isLogPanelOpen" x-cloak
            x-transition:enter="transition ease-out duration-200" x-transition:enter-start="translate-x-full" x-transition:enter-end="translate-x-0"
            x-transition:leave="transition ease-in duration-150" x-transition:leave-start="translate-x-0" x-transition:leave-end="translate-x-full">
-        <div class="inspector-header"><div><div class="text-[10px] uppercase tracking-[0.15em] text-white/30 mb-1">Inspect log</div><h2 x-text="selectedLog?.severity_text || 'Log'" :class="getLogLevelClass(selectedLog?.severity_text)"></h2></div><button @click="closeLogPanel()" class="inspector-close">×</button></div>
+        <div class="inspector-header"><div><div class="text-[12px] uppercase tracking-[0.15em] text-white/30 mb-1">Inspect log</div><h2 x-text="selectedLog?.severity_text || 'Log'" :class="getLogLevelClass(selectedLog?.severity_text)"></h2></div><button @click="closeLogPanel()" class="inspector-close" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="/images/icons.svg#close"/></svg></button></div>
         <div class="inspector-content" x-show="selectedLog">
             <div class="inspector-summary-grid">
                 <div><span>Time</span><strong x-text="formatLogRelativeTime(selectedLog?.time_unix_nano)"></strong></div>
@@ -397,7 +417,7 @@
             </div>
             <div class="inspector-section"><div class="inspector-section-title">Message</div><pre class="inspector-pre content" x-text="getLogBody(selectedLog)"></pre></div>
             <div class="inspector-section"><div class="inspector-section-title flex justify-between">Raw <button class="copy-button" @click="copyLogToClipboard()" x-text="logCopied ? 'Copied' : 'Copy'"></button></div><pre class="inspector-pre" x-text="getRawLogJSON(selectedLog)"></pre></div>
-            <button x-show="logHasSpan()" class="w-full chrome-button py-2.5" @click="jumpToSpanFromLog()">Open correlated trace span →</button>
+            <button x-show="logHasSpan()" class="w-full chrome-button py-2.5" @click="jumpToSpanFromLog()">Open correlated trace span <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#arrow-right"/></svg></button>
         </div>
     </aside>
 </div>

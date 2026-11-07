@@ -156,7 +156,7 @@ function metricsViewMixin() {
                 title: { display: false },
                 ticks: {
                     color: 'rgba(255, 255, 255, 0.5)',
-                    font: { size: 10, family: 'monospace' },
+                    font: { size: 12, family: 'monospace' },
                     callback: (value) => this.formatMetricsTime(value)
                 },
                 grid: { color: 'rgba(255, 255, 255, 0.05)' }
@@ -169,11 +169,11 @@ function metricsViewMixin() {
                     display: true,
                     text: 'Time (ms)',
                     color: 'rgba(255, 255, 255, 0.5)',
-                    font: { size: 12 }
+                    font: { size: 14 }
                 },
                 ticks: {
                     color: 'rgba(255, 255, 255, 0.5)',
-                    font: { size: 12, family: 'monospace' }
+                    font: { size: 14, family: 'monospace' }
                 },
                 grid: { color: 'rgba(255, 255, 255, 0.05)' },
                 beginAtZero: true

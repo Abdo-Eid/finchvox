@@ -27,12 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Finchvox anonymous product telemetry is disabled by default in this fork.
 - UI assets are local; session pages no longer require the Tailwind Play CDN.
 - Pipecat runtime packages moved to the optional `pipecat` extra so LiveKit-only installs stay smaller.
+- Larger text throughout the UI (most small labels go from 9–11 px to 11–13 px; body text from 13 to 15 px).
+- Icons are now line icons from a local `ui/images/icons.svg` instead of text symbols (↶ ▶ ↓ × › ⌘ ↔ ⚙), including user and agent avatars in the transcript.
+- The UI adapts to narrow windows: sessions become cards below 1140 px, the inspector covers the page instead of squeezing it below 1100 px, and on phones the header shortens, the trace scrolls within its own area and the log table drops the logger column. Waveform time labels thin out to fit the width.
 - The `livekit` extra installs only `livekit-agents`. The Silero, OpenAI, Deepgram and Cartesia plugin packages were not used; Agents ships its own VAD and LiveKit Inference.
 - The LiveKit example uses `google/gemma-4-31b-it` instead of the deprecated `openai/gpt-4o-mini`, and no longer loads Silero by hand.
 - The LiveKit adapter no longer reads attribute names used before Agents 1.8, and no longer lists span names the SDK does not create (`stt_node`, `stt_request`, `execute_tool`, `room_io`).
 
 ### Fixed
 
+- LiveKit latency charts count each measurement once. LLM and TTS timings repeated on the hidden `llm_node` and `tts_node` wrappers, and transcription and end-of-turn delays copied onto the answering `agent_turn`, are no longer counted again.
+- LiveKit's placeholders are no longer charted as timings: `-1` for an LLM request with no first token, and `0` on a user turn LiveKit could not time (such as the one it closes after the call ends).
+- The Trace tab's span tree leaves out spans the timeline hides, such as `job_entrypoint` and `llm_node`, and moves their children up a level. **Show all spans** lists them again.
+- Rebuilding the Docker image picks up changed code and UI files. uv reused its cached build of Finchvox until `pyproject.toml` changed, so a rebuild could serve old files.
+- Slow agent turns in the Trace tab no longer show raw icon markup in their subtitle ("Response 3.4s · slow"), and spans without children no longer show an expand arrow.
 - Session zip uploads can no longer delete the data folder or other sessions through unsafe paths, and must keep every file inside the session's own folder.
 - A failed session upload no longer loses the existing copy of that session.
 - Session uploads are limited in size and are no longer read fully into memory.

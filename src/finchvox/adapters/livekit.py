@@ -180,6 +180,11 @@ class LiveKitAdapter(BaseTraceAdapter):
         return None
 
     def get_ttfb(self, span: dict) -> float | None:
+        value = self._reported_ttfb(span)
+        # LiveKit reports -1 when no first token or byte arrived (llm.py, gpt_live.py).
+        return value if value is not None and value >= 0 else None
+
+    def _reported_ttfb(self, span: dict) -> float | None:
         span_name = span.get("name", "")
         category = self.get_span_config(span_name).category
 
@@ -305,6 +310,13 @@ class LiveKitAdapter(BaseTraceAdapter):
                 "queue_wait_seconds": self._as_float(self._get_attribute(span, "lk.speech.queue_wait")),
             }
         )
+        if span_name == "user_turn" and normalized["end_of_turn_delay_seconds"] == 0:
+            # LiveKit writes 0 for both delays when it could not time the turn
+            # (audio_recognition.py, "or 0"). A measured end-of-turn delay is never
+            # exactly 0, while a measured transcription delay can be.
+            normalized["transcription_delay_seconds"] = None
+            normalized["end_of_turn_delay_seconds"] = None
+            normalized["ttfb_seconds"] = None
         normalized["is_error"] = self._is_error(span)
         if normalized["is_error"] and normalized.get("category") == "lifecycle":
             # Lifecycle spans are hidden to keep the timeline readable, but a failing

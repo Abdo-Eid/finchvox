@@ -21,10 +21,8 @@
             <span class="local-only-badge">LOCAL</span>
             <button type="button" class="chrome-button" @click="showUploadSection = !showUploadSection"
                     :class="{ 'sessions-button-active': showUploadSection }">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" width="14" height="14" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-                </svg>
-                Import session
+                <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#upload"/></svg>
+                <span class="sessions-import-label">Import session</span>
             </button>
         </div>
     </header>
@@ -62,7 +60,7 @@
         </section>
 
         <section x-cloak x-show="sessions.length === 0" class="sessions-empty">
-            <div class="sessions-empty-icon">⌁</div>
+            <div class="sessions-empty-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="/images/icons.svg#audio"/></svg></div>
             <h2>No sessions yet</h2>
             <p>Start Finchvox, connect your LiveKit agent to the local OTLP endpoint, then make a call. The replay will appear here automatically.</p>
             <code x-show="dataDir" x-text="dataDir"></code>
@@ -101,16 +99,16 @@
                                         </div>
                                     </div>
                                 </td>
-                                <td><a class="sessions-id-link" :href="`/sessions/${session.session_id}`" @click.stop x-text="session.session_id"></a></td>
-                                <td class="sessions-muted" x-text="formatDate(session.start_time)"></td>
-                                <td class="sessions-mono" x-text="formatDuration(session.duration_ms)"></td>
-                                <td class="sessions-mono" x-text="session.trace.turn_count > 0 ? formatCount(session.trace.turn_count) : '—'"></td>
-                                <td class="sessions-mono" x-text="formatCount(session.log_count)"></td>
-                                <td>
+                                <td class="sessions-id-cell"><a class="sessions-id-link" :href="`/sessions/${session.session_id}`" @click.stop x-text="session.session_id"></a></td>
+                                <td class="sessions-muted" data-label="Started" x-text="formatDate(session.start_time)"></td>
+                                <td class="sessions-mono" data-label="Duration" x-text="formatDuration(session.duration_ms)"></td>
+                                <td class="sessions-mono" data-label="Turns" x-text="session.trace.turn_count > 0 ? formatCount(session.trace.turn_count) : '—'"></td>
+                                <td class="sessions-mono" data-label="Logs" x-text="formatCount(session.log_count)"></td>
+                                <td data-label="Errors">
                                     <span class="sessions-error-pill" :class="{ 'has-errors': (session.error_count || 0) > 0 }" x-text="session.error_count || 0"></span>
                                 </td>
-                                <td class="sessions-mono" x-text="session.audio_size_mb !== null ? session.audio_size_mb + ' MB' : '—'"></td>
-                                <td class="sessions-open-arrow">›</td>
+                                <td class="sessions-mono" data-label="Audio" x-text="session.audio_size_mb !== null ? session.audio_size_mb + ' MB' : '—'"></td>
+                                <td class="sessions-open-arrow"><svg class="icon" aria-hidden="true"><use href="/images/icons.svg#chevron-right"/></svg></td>
                             </tr>
                         </template>
                     </tbody>

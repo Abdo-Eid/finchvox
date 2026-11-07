@@ -165,9 +165,12 @@ class Metrics:
             if value is None or isinstance(value, bool):
                 continue
             try:
-                return float(value)
+                seconds = float(value)
             except (TypeError, ValueError):
                 continue
+            # A negative timing is a "not measured" placeholder, such as LiveKit's -1.
+            if seconds >= 0:
+                return seconds
         return None
 
     def _report_span_id(self, message: dict) -> str:
@@ -205,7 +208,9 @@ class Metrics:
         for span in self.spans:
             normalized = span.get("_normalized", {})
             category = normalized.get("category")
-            if category not in self.CATEGORIES:
+            # Hidden spans wrap a visible one carrying the same timing, such as
+            # LiveKit's llm_node around llm_request; counting both doubles each point.
+            if category not in self.CATEGORIES or normalized.get("hidden"):
                 continue
             data_point = self._extract_ttfb_data_point(span)
             if data_point:
@@ -298,6 +303,21 @@ class Metrics:
         )
         return self._user_bot_latency_series
 
+    def _turn_delay_spans(self, normalized_key: str) -> list[dict]:
+        """Spans carrying ``normalized_key``, one per user turn.
+
+        LiveKit puts the transcription and end-of-turn delays on the user turn and
+        copies them onto the agent turn that answers it. The user turn is the one
+        to count, since it exists even when the agent does not answer; agent turns
+        are used only when no user turn has the value.
+        """
+        carrying = [
+            span for span in self.spans
+            if span.get("_normalized", {}).get(normalized_key) is not None
+        ]
+        user_turns = [span for span in carrying if span.get("name") == "user_turn"]
+        return user_turns or carrying
+
     def _livekit_turn_breakdown(self) -> dict[str, dict]:
         mapping = {
             "transcription": "transcription_delay_seconds",
@@ -309,10 +329,8 @@ class Metrics:
         for label, normalized_key in mapping.items():
             points = []
             values_ms = []
-            for span in self.spans:
-                value = span.get("_normalized", {}).get(normalized_key)
-                if value is None:
-                    continue
+            for span in self._turn_delay_spans(normalized_key):
+                value = span["_normalized"][normalized_key]
                 start_nano = int(span.get("start_time_unix_nano", 0))
                 timestamp_ms = start_nano / 1_000_000
                 value_ms = float(value) * 1000

@@ -30,8 +30,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 COPY ui ./ui
+# uv reuses a cached build of a local project until pyproject.toml changes, so
+# a rebuild would otherwise install the previous src/ and ui/ files.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-editable ${SKIP_PACKAGES}
+    uv sync --locked --no-dev --no-editable --reinstall-package finchvox ${SKIP_PACKAGES}
 
 # Stage 2 runs it, with only the finished environment: no uv, no source tree.
 FROM python:${PYTHON_VERSION}-slim
