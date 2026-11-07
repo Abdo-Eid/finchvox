@@ -146,6 +146,60 @@ async def upload_session_artifacts(
     return trace_id
 
 
+async def finalize_session(
+    ctx: Any,
+    *,
+    audio_path: str | Path | None = None,
+    endpoint: str | None = None,
+) -> str | None:
+    """Send a finished LiveKit job's report and recording to Finchvox.
+
+    Use this inside your own ``on_session_end``. If you have none, pass
+    ``on_session_end`` below to ``@server.rtc_session`` instead.
+
+    It builds the session report, flushes traces so Finchvox can match the report
+    to them, and uploads the report and recording. It also schedules one more
+    flush for the spans LiveKit ends after ``on_session_end``. Errors are logged,
+    never raised, so Finchvox cannot break the job's shutdown.
+
+    Args:
+        ctx: The LiveKit ``JobContext``.
+        audio_path: A recording to upload instead of the one in the report.
+        endpoint: Finchvox HTTP origin. Defaults to the host ``init_livekit()`` was
+            given, on port 3000.
+
+    Returns:
+        The Finchvox trace ID, or None if anything failed.
+    """
+    import finchvox
+
+    async def flush_late_spans() -> None:
+        finchvox.flush_livekit()
+
+    try:
+        ctx.add_shutdown_callback(flush_late_spans)
+        report = ctx.make_session_report()
+        finchvox.flush_livekit()
+        return await upload_session_artifacts(
+            report=report,
+            audio_path=audio_path,
+            endpoint=endpoint or finchvox._livekit_upload_endpoint,
+        )
+    except Exception:
+        # Runs during the job's shutdown, so observability must never break it.
+        logger.exception("Could not send the session to Finchvox")
+        return None
+
+
+async def on_session_end(ctx: Any) -> None:
+    """Ready-made LiveKit callback: ``@server.rtc_session(on_session_end=...)``.
+
+    Together with ``finchvox.init_livekit()`` this is the whole Finchvox setup. See
+    ``finalize_session`` for what it does and how to use it from your own callback.
+    """
+    await finalize_session(ctx)
+
+
 def session_report_json(report: Any) -> str:
     """Serialize a LiveKit SessionReport in a predictable, readable form."""
     return json.dumps(_report_to_dict(report), indent=2, ensure_ascii=False)

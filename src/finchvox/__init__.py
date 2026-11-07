@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from importlib.metadata import version
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from loguru import logger
 from opentelemetry import trace as otel_trace
@@ -13,6 +14,11 @@ from finchvox.environment import EnvironmentSpanProcessor, capture_environment
 _initialized = False
 _allowed_log_modules: set[str] = {"pipecat.", "finchvox.", "__main__"}
 _app_root: Path | None = None
+
+# Remembered by init_livekit() so that flush_livekit() and
+# finchvox.livekit.on_session_end need no arguments.
+_livekit_tracer_provider: TracerProvider | None = None
+_livekit_upload_endpoint = "http://localhost:3000"
 
 
 def init(
@@ -79,8 +85,18 @@ def init(
 
 
 def _collector_http_endpoint(grpc_endpoint: str) -> str:
-    """Finchvox serves HTTP on 3000 next to its OTLP/gRPC collector on 4317."""
-    return grpc_endpoint.replace(":4317", ":3000")
+    """Finchvox's HTTP address on the same host as its OTLP/gRPC collector.
+
+    Finchvox serves HTTP on port 3000 by default, whatever port the collector
+    uses, so this keeps the host and scheme and sets the port to 3000. Servers
+    started on another HTTP port need an explicit ``http_endpoint``.
+    """
+    url = grpc_endpoint if "://" in grpc_endpoint else f"http://{grpc_endpoint}"
+    parsed = urlsplit(url)
+    host = parsed.hostname or "localhost"
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{parsed.scheme}://{host}:3000"
 
 
 def _is_allowed_source(module: str, pathname: str | None) -> bool:
@@ -270,6 +286,7 @@ def init_livekit(
     *,
     capture_logs: bool = True,
     allow_pii: bool = True,
+    http_endpoint: str | None = None,
 ) -> TracerProvider:
     """Initialize local-first LiveKit Agents observability.
 
@@ -282,7 +299,16 @@ def init_livekit(
     Set it to ``False`` to strip span content. This does not redact separately
     exported logs, uploaded session reports, or recordings. Requires the
     supported LiveKit Agents baseline (1.8.9+) with ``allow_pii`` support.
+
+    The provider and endpoint are remembered, so ``flush_livekit()`` and
+    ``finchvox.livekit.on_session_end`` work without being passed them.
+
+    ``http_endpoint`` is Finchvox's HTTP address, used for session reports,
+    recordings and the Environment tab. It defaults to port 3000 on the host in
+    ``endpoint``; set it when Finchvox serves HTTP on another port.
     """
+    global _livekit_tracer_provider, _livekit_upload_endpoint
+
     from livekit.agents.telemetry import set_tracer_provider
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import SERVICE_NAME, Resource
@@ -291,15 +317,14 @@ def init_livekit(
 
     resource = Resource.create({SERVICE_NAME: service_name})
     tracer_provider = TracerProvider(resource=resource)
+    upload_endpoint = http_endpoint or _collector_http_endpoint(endpoint)
 
     exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
     tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
 
     # Feeds the Environment tab: OS, Python and installed package versions.
     capture_environment()
-    tracer_provider.add_span_processor(
-        EnvironmentSpanProcessor(endpoint=_collector_http_endpoint(endpoint))
-    )
+    tracer_provider.add_span_processor(EnvironmentSpanProcessor(endpoint=upload_endpoint))
 
     set_tracer_provider(
         tracer_provider, metadata=metadata, allow_pii=allow_pii
@@ -313,6 +338,9 @@ def init_livekit(
         # Keep a reference so callers can flush/shutdown both signal providers.
         tracer_provider._finchvox_logger_provider = logger_provider
 
+    _livekit_tracer_provider = tracer_provider
+    _livekit_upload_endpoint = upload_endpoint
+
     logger.info(
         f"Finchvox v{version('finchvox')} LiveKit initialized with "
         f"service_name='{service_name}', endpoint='{endpoint}', "
@@ -322,8 +350,17 @@ def init_livekit(
     return tracer_provider
 
 
-def flush_livekit(tracer_provider: TracerProvider, timeout_millis: int = 30000) -> bool:
-    """Flush LiveKit traces and Finchvox OTLP logs before process shutdown."""
+def flush_livekit(
+    tracer_provider: TracerProvider | None = None, timeout_millis: int = 30000
+) -> bool:
+    """Flush LiveKit traces and Finchvox OTLP logs before process shutdown.
+
+    Without an argument, flushes the provider ``init_livekit()`` created. Returns
+    True when everything was sent, including when there is nothing to flush.
+    """
+    tracer_provider = tracer_provider or _livekit_tracer_provider
+    if tracer_provider is None:
+        return True
     trace_ok = tracer_provider.force_flush(timeout_millis=timeout_millis)
     log_provider = getattr(tracer_provider, "_finchvox_logger_provider", None)
     log_ok = True

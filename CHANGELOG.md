@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - LiveKit voice latency normalization for E2E, transcription/end-of-turn delays, LLM TTFT, TTS TTFB, and queue wait where available.
 - `docs/LIVEKIT_LOCAL_SETUP.md` and a runnable `examples/livekit/agent.py`.
 - `--max-upload-mb` to configure the session upload limit (default 1024 MB). Unzipped size limits scale with it.
+- `finchvox.livekit.on_session_end`, so connecting a LiveKit agent takes two lines: `init_livekit()` and `@server.rtc_session(on_session_end=on_session_end)`. It flushes, uploads the session report and recording, and never raises during the job's shutdown. `finalize_session(ctx)` does the same from an agent's own callback. `flush_livekit()` no longer needs the provider passed in.
+- A `Dockerfile` and `compose.yaml` for the Finchvox server, publishing its ports on this machine only and keeping sessions in a named volume. See `docs/DOCKER.md`.
 - LiveKit spans from Agents 1.8: `eou_detection`, `event_loop_blocked`, the LLM/TTS fallback and stream adapters, `amd`, and `wait_for_audio_track`. Lifecycle spans (`job_entrypoint`, `on_enter`, `session_close`, `rpc_call` and others) are hidden from the timeline unless they fail.
 - The Metrics tab shows blocked moments of the agent's event loop, job dispatch latency, and per-model usage from the `SessionReport`.
 - The Environment tab now works for LiveKit agents started with `init_livekit()`.

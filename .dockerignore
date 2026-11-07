@@ -12,3 +12,6 @@
 .finchvox-data/
 dist/
 build/
+.claude/
+docs/
+worker/

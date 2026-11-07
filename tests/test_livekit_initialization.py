@@ -70,6 +70,26 @@ def test_init_livekit_reports_the_environment_for_the_environment_tab(
     assert processors[0]._endpoint == "http://finchvox:3000"
 
 
+def test_environment_upload_follows_an_explicit_http_endpoint(livekit_setup, monkeypatch):
+    from finchvox.environment import EnvironmentSpanProcessor
+
+    monkeypatch.setattr(finchvox, "capture_environment", Mock())
+    _, provider = livekit_setup
+
+    finchvox.init_livekit(
+        capture_logs=False,
+        endpoint="http://finchvox:4391",
+        http_endpoint="http://finchvox:3991",
+    )
+
+    processor = next(
+        call.args[0]
+        for call in provider.add_span_processor.call_args_list
+        if isinstance(call.args[0], EnvironmentSpanProcessor)
+    )
+    assert processor._endpoint == "http://finchvox:3991"
+
+
 def test_pipecat_log_context_prefers_active_native_span():
     context = SpanContext(123, 456, False, TraceFlags(TraceFlags.SAMPLED))
     with trace.use_span(NonRecordingSpan(context), end_on_exit=False):

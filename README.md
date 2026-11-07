@@ -117,53 +117,40 @@ uv run finchvox start --max-upload-mb 4096
 
 Finchvox binds to loopback by default. If another container or machine must reach it, opt in explicitly with `--host 0.0.0.0` and protect the port at the network layer.
 
-### 3. Instrument the agent
+Or run it in Docker, with the same ports and sessions kept in a Docker volume:
 
-Initialize Finchvox before `AgentSession.start()`:
+```bash
+docker compose up -d --build
+```
+
+See [`docs/DOCKER.md`](docs/DOCKER.md) for settings, backups and Windows notes.
+
+### 3. Add two lines to the agent
 
 ```python
 import finchvox
+from finchvox.livekit import on_session_end
 
-tracer_provider = finchvox.init_livekit(
-    service_name="my-livekit-agent",
-    endpoint="http://localhost:4317",
-    capture_logs=True,
-    allow_pii=True,
-)
-```
+finchvox.init_livekit(service_name="my-livekit-agent")   # before the session starts
 
-Flush batched telemetry before the job exits:
-
-```python
-async def flush_observability():
-    finchvox.flush_livekit(tracer_provider)
-
-ctx.add_shutdown_callback(flush_observability)
-```
-
-### 4. Finalize the local replay
-
-```python
-from finchvox.livekit import upload_session_artifacts
-
-async def on_session_end(ctx):
-    report = ctx.make_session_report()
-
-    # Make the completed trace visible before report correlation.
-    finchvox.flush_livekit(tracer_provider)
-
-    await upload_session_artifacts(report=report)
-```
-
-Register that callback:
-
-```python
-@server.rtc_session(on_session_end=on_session_end)
+@server.rtc_session(on_session_end=on_session_end)       # your existing decorator
 async def entrypoint(ctx):
     ...
 ```
 
-If the report contains a valid local `audio_recording_path`, Finchvox uploads that recording automatically. You can also pass your own finalized file with `audio_path=...`.
+The first line sends traces and logs to Finchvox while the call runs. The second sends LiveKit's session report and recording when it ends. It also flushes everything at the right moments, and only logs a problem, never raising it, so Finchvox cannot break your agent's shutdown. LiveKit Cloud keeps receiving its own copy.
+
+If you already have an `on_session_end`, call Finchvox from it instead:
+
+```python
+from finchvox.livekit import finalize_session
+
+async def on_session_end(ctx):
+    ...  # your own code
+    await finalize_session(ctx)
+```
+
+`finalize_session` also accepts `audio_path=...` for a recording of your own, and `endpoint=...`. By default it uploads to port 3000 on the host given to `init_livekit()`.
 
 ## Full LiveKit setup guide
 
@@ -249,19 +236,10 @@ finchvox.init_livekit(capture_logs=False)
 
 OTLP spans do not contain replayable audio. To show the waveform/playback experience, attach a finalized recording.
 
-Automatic path from a LiveKit report:
+`on_session_end` uploads the recording LiveKit made, when the session report names one (`audio_recording_path`). To upload a recording of your own instead:
 
 ```python
-await upload_session_artifacts(report=ctx.make_session_report())
-```
-
-Explicit recording:
-
-```python
-await upload_session_artifacts(
-    report=ctx.make_session_report(),
-    audio_path="./recordings/session.ogg",
-)
+await finalize_session(ctx, audio_path="./recordings/session.ogg")
 ```
 
 Supported finalized formats:

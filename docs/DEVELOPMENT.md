@@ -106,6 +106,12 @@ Python compile check:
 PYTHONPATH=src python -m compileall -q src tests examples/livekit
 ```
 
+Docker smoke test, which builds and runs the real container (takes a minute or so; see [`DOCKER.md`](DOCKER.md)):
+
+```bash
+FINCHVOX_DOCKER_TESTS=1 uv run --extra dev pytest tests/test_docker.py
+```
+
 Lock file check, which confirms `uv.lock` still matches `pyproject.toml`:
 
 ```bash

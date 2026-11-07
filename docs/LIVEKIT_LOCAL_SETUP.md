@@ -79,23 +79,38 @@ To keep the data with your project instead of in your home directory:
 uv run finchvox start --data-dir ./.finchvox-data
 ```
 
-## 3. Add Finchvox tracing to your LiveKit agent
+## 3. Add Finchvox to your LiveKit agent
 
-Initialize Finchvox **before the `AgentSession` starts**:
+Two lines connect an agent to Finchvox:
 
 ```python
 import finchvox
+from finchvox.livekit import on_session_end
 
-tracer_provider = finchvox.init_livekit(
+finchvox.init_livekit(service_name="my-livekit-agent")
+
+
+@server.rtc_session(on_session_end=on_session_end)
+async def entrypoint(ctx: JobContext):
+    ...
+```
+
+Call `init_livekit()` **before the `AgentSession` starts**. It creates an OpenTelemetry `TracerProvider`, sends spans to the local OTLP/gRPC collector, and registers it with LiveKit via `livekit.agents.telemetry.set_tracer_provider()`. Its other options:
+
+```python
+finchvox.init_livekit(
     service_name="my-livekit-agent",
-    endpoint="http://localhost:4317",
-    capture_logs=True,
-    allow_pii=True,
+    endpoint="http://localhost:4317",   # the default
+    capture_logs=True,                  # the default; see section 10
+    allow_pii=True,                     # the default; see below
     metadata={"environment": "local"},
+    http_endpoint=None,                 # the default: port 3000 on the same host
 )
 ```
 
-`init_livekit()` creates an OpenTelemetry `TracerProvider`, sends spans to the local OTLP/gRPC collector, and registers it with LiveKit via `livekit.agents.telemetry.set_tracer_provider()`.
+`http_endpoint` is where reports, recordings and environment details go. Set it only when Finchvox's HTTP port is not 3000, for example `http_endpoint="http://localhost:3991"` when the container was started with `FINCHVOX_HTTP_PORT=3991`.
+
+`init_livekit()` also remembers its provider and endpoint, so `flush_livekit()` and `on_session_end` need no arguments.
 
 ### About `allow_pii`
 
@@ -104,7 +119,7 @@ For a local Agent-Insights-style replay, `allow_pii=True` is normally what you w
 If you only want timing, model, token, and structural telemetry:
 
 ```python
-tracer_provider = finchvox.init_livekit(
+finchvox.init_livekit(
     service_name="my-livekit-agent",
     allow_pii=False,
 )
@@ -112,77 +127,42 @@ tracer_provider = finchvox.init_livekit(
 
 With the supported LiveKit Agents 1.8.9+ baseline, this strips span content before it reaches the custom exporter. It does not redact separately exported logs, uploaded SessionReports, or recordings. The Trace and Metrics views still work, but the trace-derived transcript/tool-content experience is intentionally reduced.
 
-## 4. Flush telemetry during shutdown
+## 4. What `on_session_end` does
 
-OpenTelemetry batches exports. Flush the provider before the job process exits:
+The LiveKit SDK can generate a `SessionReport` entirely inside your agent process. It contains final conversation history, events, usage/metrics, identifiers, and recording metadata. When the session ends, `finchvox.livekit.on_session_end`:
 
-```python
-async def flush_observability():
-    finchvox.flush_livekit(tracer_provider)
+1. builds that report with `ctx.make_session_report()`;
+2. flushes the batched traces and logs, so Finchvox can match the report to the trace that just ended (by LiveKit job ID, room SID, or room name);
+3. uploads the report, plus the recording it names, to Finchvox; and
+4. schedules one more flush for the spans LiveKit ends after `on_session_end`, such as the room disconnect.
 
-ctx.add_shutdown_callback(flush_observability)
-```
+Any error is logged, never raised, so Finchvox cannot break the job's shutdown. That includes Finchvox not running, and `make_session_report()` failing while LiveKit's recorder is still recording. LiveKit runs your `on_session_end` before its own Cloud upload, so LiveKit Cloud still receives its copy.
 
-This flushes both traces and Finchvox's OTLP log provider.
+## 5. If you already have an `on_session_end`
 
-## 5. Attach the final LiveKit SessionReport
-
-The LiveKit SDK can generate a `SessionReport` entirely inside your agent process. It contains final conversation history, events, usage/metrics, identifiers, and recording metadata.
-
-Add an `on_session_end` callback:
+Call `finalize_session` from your own callback. It does the same steps and returns the Finchvox trace ID, or `None` if something failed:
 
 ```python
-import logging
-
-import finchvox
-from finchvox.livekit import upload_session_artifacts
-from livekit.agents import JobContext
-
-logger = logging.getLogger("agent")
+from finchvox.livekit import finalize_session
 
 
 async def on_session_end(ctx: JobContext) -> None:
-    report = ctx.make_session_report()
-
-    # Make the just-finished spans visible to Finchvox before it tries to
-    # correlate the report by LiveKit job/room identifiers.
-    finchvox.flush_livekit(tracer_provider)
-
-    try:
-        trace_id = await upload_session_artifacts(report=report)
-        logger.info("Finchvox replay finalized", extra={"finchvox_trace_id": trace_id})
-    except Exception:
-        # Observability should not make normal job shutdown fail.
-        logger.exception("Failed to finalize Finchvox replay")
+    ...  # your own code
+    trace_id = await finalize_session(ctx)
 ```
 
-Register it on the server:
+It also accepts `audio_path=` for a recording of your own and `endpoint=` for the Finchvox HTTP address. By default it uses port 3000 on the host given to `init_livekit()`, so an agent configured with `endpoint="http://host.docker.internal:4317"` uploads to `http://host.docker.internal:3000`.
 
-```python
-@server.rtc_session(on_session_end=on_session_end)
-async def entrypoint(ctx: JobContext):
-    ...
-```
-
-Finchvox resolves the report to the OpenTelemetry trace using LiveKit job ID, room SID, or room name. You do not normally need to carry the trace ID yourself.
+`upload_session_artifacts()` remains available when you need full control, for example to upload a report you built yourself.
 
 ## 6. Complete example
 
 ```python
-import logging
-
 import finchvox
-from finchvox.livekit import upload_session_artifacts
+from finchvox.livekit import on_session_end
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext, inference
 
-logger = logging.getLogger("my-agent")
-
-tracer_provider = finchvox.init_livekit(
-    service_name="my-livekit-agent",
-    endpoint="http://localhost:4317",
-    capture_logs=True,
-    allow_pii=True,
-)
+finchvox.init_livekit(service_name="my-livekit-agent")
 
 
 class Assistant(Agent):
@@ -198,23 +178,8 @@ class Assistant(Agent):
 server = AgentServer()
 
 
-async def on_session_end(ctx: JobContext) -> None:
-    report = ctx.make_session_report()
-    finchvox.flush_livekit(tracer_provider)
-
-    try:
-        await upload_session_artifacts(report=report)
-    except Exception:
-        logger.exception("Failed to upload local Finchvox session artifacts")
-
-
 @server.rtc_session(on_session_end=on_session_end)
 async def entrypoint(ctx: JobContext):
-    async def flush_observability():
-        finchvox.flush_livekit(tracer_provider)
-
-    ctx.add_shutdown_callback(flush_observability)
-
     # AgentSession uses LiveKit's bundled Silero VAD by default.
     session = AgentSession()
     await session.start(agent=Assistant(), room=ctx.room)
@@ -232,7 +197,7 @@ OpenTelemetry spans do **not** contain replayable audio. Finchvox therefore trea
 
 ### Fully self-hosted LiveKit
 
-On current LiveKit Agents releases, session recording can create a local OGG file inside the job session directory. The resulting `SessionReport` exposes its path as `audio_recording_path`. If that path is present, `upload_session_artifacts(report=report)` uploads it to Finchvox automatically.
+On current LiveKit Agents releases, session recording can create a local OGG file inside the job session directory. The resulting `SessionReport` exposes its path as `audio_recording_path`. If that path is present, `on_session_end` uploads it to Finchvox automatically.
 
 Make recording explicit when you want it:
 
@@ -256,10 +221,7 @@ For a self-hosted LiveKit server, LiveKit's Cloud observability endpoint is unav
 Your custom OpenTelemetry exporter still sends its copy of traces to Finchvox. However, LiveKit's `record` settings control LiveKit Cloud observability too. If your requirement is **no session audio/transcript upload to LiveKit Cloud**, use the LiveKit settings appropriate for that requirement (for example `record=False`) and attach audio to Finchvox from your own local recorder instead:
 
 ```python
-await upload_session_artifacts(
-    report=ctx.make_session_report(),
-    audio_path="./recordings/session.ogg",
-)
+await finalize_session(ctx, audio_path="./recordings/session.ogg")
 ```
 
 Do not assume `record=True` is local-only when your agent is connected to LiveKit Cloud.
@@ -282,21 +244,10 @@ If both containers share a Docker network, use the Finchvox service name:
 finchvox start --host 0.0.0.0
 ```
 
-Then point the agent at the Finchvox service name:
+Then point the agent at the Finchvox service name. `on_session_end` then sends reports and recordings to `http://finchvox:3000` automatically:
 
 ```python
-tracer_provider = finchvox.init_livekit(
-    endpoint="http://finchvox:4317",
-)
-```
-
-And send reports to the HTTP service name:
-
-```python
-await upload_session_artifacts(
-    report=report,
-    endpoint="http://finchvox:3000",
-)
+finchvox.init_livekit(endpoint="http://finchvox:4317")
 ```
 
 If Finchvox runs on the host and your agent runs in Docker Desktop, `host.docker.internal` is commonly available:
@@ -392,8 +343,9 @@ Check that:
 
 1. Finchvox is running and `localhost:4317` is reachable from the agent process.
 2. `finchvox.init_livekit()` runs before `session.start()`.
-3. the provider is flushed at shutdown.
+3. `on_session_end` is passed to `@server.rtc_session`, or your own callback calls `finalize_session`; either flushes at shutdown. If not, call `finchvox.flush_livekit()` before the job exits.
 4. Docker/container networking is not pointing `localhost` at the wrong container.
+5. The agent's log has no "Could not send the session to Finchvox" error.
 
 ### Trace appears but transcript content is missing
 
@@ -405,10 +357,10 @@ Traces do not contain audio. Attach a finalized recording, or enable a LiveKit r
 
 ### SessionReport upload returns 404 / cannot resolve trace
 
-Flush first:
+`on_session_end` flushes before uploading. If you upload yourself, flush first:
 
 ```python
-finchvox.flush_livekit(tracer_provider)
+finchvox.flush_livekit()
 ```
 
 Then retry the report upload. Automatic correlation needs at least one completed span with matching LiveKit job/room identifiers. As a fallback, pass the known 32-character OTel trace ID explicitly.
