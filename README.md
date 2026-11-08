@@ -279,7 +279,7 @@ node --check ui/js/sessions_list.js
 PYTHONPATH=src python -m compileall -q src tests examples/livekit
 ```
 
-Background and fork history are in [`docs/FORK.md`](docs/FORK.md); research and design reviews are in [`docs/research/`](docs/research/README.md).
+Note that `pip install finchvox` installs the original project from PyPI, not this fork.
 
 ## Known limitations
 
