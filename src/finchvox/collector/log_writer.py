@@ -13,24 +13,18 @@ class LogWriter:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
 
-    def write_log(self, log_record, resource_logs, scope_logs):
-        """Write a single log record to its trace-specific JSONL file."""
+    def write_log(self, log_record, resource_logs, scope_logs) -> bool:
+        """Append a session log and report whether the write completed."""
         trace_id_bytes = log_record.trace_id
         if not trace_id_bytes or trace_id_bytes == b"\x00" * 16:
-            body = (
-                log_record.body.string_value
-                if log_record.body.string_value
-                else str(log_record.body)
-            )
-            logger.debug(f"Received log without trace_id, discarding: {body[:200]}")
-            return
+            return False
 
         try:
             trace_id_hex = trace_id_bytes.hex()
             session_dir = get_session_dir(self.data_dir, trace_id_hex)
             session_dir.mkdir(parents=True, exist_ok=True)
 
-            log_dict = self._convert_log_to_dict(log_record, resource_logs, scope_logs)
+            log_dict = self.convert_log(log_record, resource_logs, scope_logs)
 
             log_file = session_dir / f"logs_{trace_id_hex}.jsonl"
             with log_file.open("a") as f:
@@ -38,11 +32,14 @@ class LogWriter:
                 f.write("\n")
 
             logger.debug(f"Wrote log to {log_file}")
+            return True
         except (OSError, SerializeToJsonError, TypeError, ValueError) as e:
             # One unwritable log must not drop the rest of its export batch.
             logger.exception(f"Failed to write log: {e}")
+            return False
 
-    def _convert_log_to_dict(self, log_record, resource_logs, scope_logs):
+    @staticmethod
+    def convert_log(log_record, resource_logs, scope_logs):
         """Convert protobuf log record to dictionary."""
         log_data = MessageToDict(log_record, preserving_proto_field_name=True)
 

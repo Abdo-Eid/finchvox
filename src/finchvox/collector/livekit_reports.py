@@ -39,7 +39,15 @@ def livekit_report_identity(report: dict) -> tuple[str | None, str | None, str |
     )
 
 
-def resolve_livekit_trace_id(data_dir: Path, report: dict) -> str | None:
+def livekit_job_id(record: dict) -> str | None:
+    attrs = _otel_attributes(record)
+    job_id = attrs.get("job_id") or attrs.get("lk.job_id")
+    return job_id if isinstance(job_id, str) and job_id else None
+
+
+def resolve_livekit_trace_id(
+    data_dir: Path, report: dict, *, exact_job: bool = False
+) -> str | None:
     """Find the local OTel trace that belongs to a LiveKit SessionReport.
 
     LiveKit's report does not currently include the OTel trace ID, but its job,
@@ -48,6 +56,8 @@ def resolve_livekit_trace_id(data_dir: Path, report: dict) -> str | None:
     without application code manually carrying a trace ID through the session.
     """
     job_id, room_id, room_name = livekit_report_identity(report)
+    if exact_job:
+        room_id = room_name = None
     if not any((job_id, room_id, room_name)):
         return None
 
@@ -88,6 +98,8 @@ def resolve_livekit_trace_id(data_dir: Path, report: dict) -> str | None:
             continue
 
         if score:
+            if exact_job and best is not None:
+                return None  # More than one trace claims the job.
             candidate = (score, trace_file.stat().st_mtime, session_dir.name)
             if best is None or candidate > best:
                 best = candidate

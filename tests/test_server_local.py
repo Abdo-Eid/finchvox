@@ -4,7 +4,6 @@ from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.middleware.body_limit import RequestBodyLimitMiddleware
 
 import finchvox.__main__ as main_module
 import finchvox.cli as cli_module
@@ -86,7 +85,7 @@ def test_every_route_accepting_a_body_has_a_size_limit(tmp_path):
     unlimited = [
         route.path
         for route in body_routes
-        if not isinstance(route.app, RequestBodyLimitMiddleware)
+        if getattr(route, "max_body_size", None) is None
     ]
     assert unlimited == []
 

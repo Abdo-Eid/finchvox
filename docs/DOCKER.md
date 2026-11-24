@@ -86,7 +86,7 @@ In PowerShell, set the variable first with `$env:FINCHVOX_DOCKER_TESTS = "1"`.
 
 ## Image size
 
-**Decided on 2026-11-07: variant B.** The `Dockerfile` leaves out Uvicorn's extras (below), which brought the image from 201 MB to 177 MB.
+**Historical comparison, 2026-11-07:** Building without Uvicorn's optional packages brought the image from 201 MB to 177 MB. Finchvox now installs plain Uvicorn by default, so the Docker build no longer needs a separate package exclusion list.
 
 The image is built on `python:3.13-slim`, the official Python image on Debian 13 ("trixie"), currently Python 3.13.18. That base is about 118 MB of the image; Finchvox and its Python packages make up the rest. Four variants were built and checked on 2026-11-07. Each started, served the UI and turned a real span into a session:
 
@@ -101,9 +101,7 @@ B was chosen as the safe option: same Debian base, same startup time. C saves li
 
 ### Uvicorn's extras
 
-> **Needs explaining to the developer:** what Uvicorn's extras are, and whether they are good for this project. Variant B, which leaves them out of the image, was chosen before this was walked through; the notes below are the starting point for that explanation.
-
-Uvicorn is the program that runs Finchvox's web server: the UI, the API and HTTP uploads. Finchvox depends on `uvicorn[standard]`, where `[standard]` is an "extra": a named set of optional packages installed on top of plain Uvicorn. According to [Uvicorn's installation docs](https://github.com/encode/uvicorn/blob/master/docs/installation.md), the standard extra adds:
+Uvicorn runs Finchvox's UI, API, and HTTP uploads, including LiveKit's no-code telemetry path. Finchvox uses plain `uvicorn`; `[standard]` is an optional bundle. According to [Uvicorn's installation docs](https://github.com/encode/uvicorn/blob/master/docs/installation.md), it includes:
 
 | Package | What Uvicorn uses it for | Used by Finchvox? |
 |---|---|---|
@@ -118,10 +116,9 @@ Without them, Uvicorn falls back to Python's built-in event loop and its own pur
 
 Whether they help this project:
 
-- **Only the web side would get slower.** Traces and logs from agents arrive through Finchvox's separate gRPC server, which these packages do not affect. Uvicorn handles the UI, session reports and recording uploads.
+- **Only HTTP can be affected.** That includes the UI, recording uploads and traces and logs sent through `LIVEKIT_OBSERVABILITY_URL`. The separate gRPC collector does not use Uvicorn.
 - **Finchvox is a local, one-person tool.** The speed-ups matter most for servers handling many requests at once. Measured startup was the same with and without them (1.2 s).
 - **Where they could still matter:** large uploads or downloads, and a busy UI if many people ever share one Finchvox. That has not been measured.
-- **Leaving them out affects the image only.** The `Dockerfile` skips them with uv's `--no-install-package` (its `SKIP_PACKAGES` build argument), so `pyproject.toml`, `uv.lock` and installs outside Docker keep them. To put them back in the image, build with `--build-arg SKIP_PACKAGES=`.
 
 ## Later: environment-variable configuration
 

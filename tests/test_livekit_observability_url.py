@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -61,13 +62,16 @@ def test_the_sdks_own_uploads_become_a_complete_session(finchvox_url, tmp_path):
     audio_path.write_bytes(AUDIO)
 
     result = subprocess.run(
-        [sys.executable, str(UPLOADER), url, JOB_ID, str(audio_path)],
+        [sys.executable, str(UPLOADER), JOB_ID, str(audio_path)],
         capture_output=True,
         text=True,
         timeout=120,
         check=False,
         env={
             **os.environ,
+            "LIVEKIT_OBSERVABILITY_URL": url,
+            # Ensure this call's first span batch waits for the final flush.
+            "OTEL_BSP_SCHEDULE_DELAY": "60000",
             "LIVEKIT_API_KEY": "compat-key",
             "LIVEKIT_API_SECRET": "compat-secret-compat-secret-compat-secret",
         },
@@ -89,12 +93,52 @@ def test_the_sdks_own_uploads_become_a_complete_session(finchvox_url, tmp_path):
     logs = (session / f"logs_{trace_id}.jsonl").read_text()
     assert "hello from the agent" in logs
 
-    report = json.loads((session / "livekit_report.json").read_text())
+    report_path = session / "livekit_report.json"
+    deadline = time.monotonic() + 5
+    while not report_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["job_id"] == JOB_ID
     contents = [item.get("content") for item in report["chat_history"]["items"]]
     assert ["hello"] in contents and ["hi there"] in contents
+    with urllib.request.urlopen(f"{url}/api/sessions/{trace_id}/conversation", timeout=5) as response:
+        conversation = json.load(response)
+    assert "مرحبا" in json.dumps(conversation, ensure_ascii=False)
 
     assert (session / "audio.ogg").read_bytes() == AUDIO
+    logs_url = f"{url}/api/sessions/{trace_id}/logs"
+    deadline = time.monotonic() + 5
+    while True:
+        with urllib.request.urlopen(logs_url, timeout=5) as response:
+            logs = json.load(response)
+        if "outside an active span" in json.dumps(logs) or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    assert "outside an active span" in json.dumps(logs)
+    assert "chat item" not in json.dumps(logs)
     assert "compat-secret" not in "".join(
         p.read_text(errors="ignore") for p in session.iterdir() if p.is_file()
     )
+
+
+def test_large_recording_round_trips_over_http(finchvox_url):
+    url, _ = finchvox_url
+    trace_id = "a" * 32
+    recording = b"OggS" * (8 * 1024 * 1024)
+    boundary = "finchvox-test-recording"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="audio"; filename="test.ogg"\r\n'
+        "Content-Type: audio/ogg\r\n\r\n"
+    ).encode() + recording + f"\r\n--{boundary}--\r\n".encode()
+    request = urllib.request.Request(
+        f"{url}/collector/livekit/{trace_id}/audio",
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        assert response.status == 201
+    with urllib.request.urlopen(
+        f"{url}/api/sessions/{trace_id}/audio", timeout=15
+    ) as response:
+        assert response.read() == recording

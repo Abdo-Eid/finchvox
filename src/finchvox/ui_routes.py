@@ -15,7 +15,6 @@ from finchvox.audio_utils import (
     find_chunks,
     find_finalized_audio,
 )
-from finchvox.body_limit import limit_latest_route_body
 from finchvox.collector.config import (
     DEFAULT_MAX_UPLOAD_BYTES,
     get_default_data_dir,
@@ -151,7 +150,7 @@ async def _handle_get_session_raw(data_dir: Path, session_id: str) -> JSONRespon
 
     report_file = session.session_dir / "livekit_report.json"
     if report_file.exists():
-        content["livekit_session_report"] = json.loads(report_file.read_text())
+        content["livekit_session_report"] = json.loads(report_file.read_text(encoding="utf-8"))
 
     if session.has_environment:
         content["environment"] = json.loads(session.environment_file.read_text())
@@ -414,11 +413,9 @@ def register_ui_routes(
     async def download_session(session_id: str):
         return await _handle_download_session(data_dir, session_id)
 
-    @app.post("/api/sessions/upload")
+    @app.post("/api/sessions/upload", max_body_size=max_upload_bytes)
     async def upload_session(file: Annotated[UploadFile, File()]):
         return await _handle_upload_session(sessions_base_dir, file, max_upload_bytes)
-
-    limit_latest_route_body(app, max_upload_bytes)
 
     @app.get("/api/sessions/{session_id}/environment")
     async def get_session_environment(session_id: str):

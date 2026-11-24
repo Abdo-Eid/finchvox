@@ -43,6 +43,10 @@ This release merges the LiveKit insights fork into `main`, on top of upstream 0.
 
 ### Changed
 
+- The quick start now recommends the environment-variable hookup. The explicit Python integration still supports sending a second copy to LiveKit Cloud.
+
+- FastAPI 0.165 now enforces the existing per-route HTTP upload limits directly. File and archive checks are unchanged.
+- Finchvox uses plain Uvicorn by default, both locally and in Docker. Docker no longer needs to exclude Uvicorn's optional packages during the build.
 - Finchvox anonymous product telemetry is disabled by default in this fork.
 - The server listens on `127.0.0.1` by default instead of `0.0.0.0`, so other machines cannot reach it unless you pass `--host 0.0.0.0`. The Docker image passes it and publishes its ports on this machine only.
 - `import finchvox` no longer loads the Pipecat runtime; `FinchvoxProcessor` is imported on first use.
@@ -60,6 +64,10 @@ This release merges the LiveKit insights fork into `main`, on top of upstream 0.
 - The LiveKit adapter no longer reads attribute names used before Agents 1.8, and no longer lists span names the SDK does not create (`stt_node`, `stt_request`, `execute_tool`, `room_io`).
 
 ### Fixed
+
+- The zero-code LiveKit receiver saves recordings before replying, then attaches them by job ID when the trace arrives. This avoids losing a short call's recording while the SDK is waiting to flush its final spans.
+- Ordinary LiveKit HTTP logs emitted outside an active span now appear in the matching session when LiveKit supplies a job ID. Raw OpenTelemetry metrics are reported as not stored instead of being silently acknowledged.
+- OpenTelemetry uploads over HTTP and gRPC now report how many spans or logs Finchvox could not save, instead of counting them as stored.
 
 - Pipecat transcripts show each assistant reply once. Pipecat records a reply on the LLM span and again as the spoken sentences on the TTS spans, and both were joined ("Sure. Sure."). The transcript now uses what was spoken, and the LLM text only for text-only bots.
 - LiveKit latency charts count each measurement once. LLM and TTS timings repeated on the hidden `llm_node` and `tts_node` wrappers, and transcription and end-of-turn delays copied onto the answering `agent_turn`, are no longer counted again.

@@ -12,6 +12,7 @@ from finchvox.audio_utils import find_chunks, find_finalized_audio
 from finchvox.collector.config import (
     ALREADY_COMPRESSED_AUDIO,
     DEFAULT_MAX_UPLOAD_BYTES,
+    LOG_BATCH_DIRECTORY,
     MAX_UNZIPPED_RATIO,
     UNZIPPED_TEXT_DIVISOR,
 )
@@ -159,17 +160,11 @@ class Session:
         self._service_name = service_name
 
     def _load_log_count(self):
-        log_file = self.session_dir / f"logs_{self.session_id}.jsonl"
-        if not log_file.exists():
-            self._log_count = 0
-            return
-
         try:
             count = 0
-            with open(log_file, "r") as f:
-                for line in f:
-                    if line.strip():
-                        count += 1
+            for log_file in self._log_files():
+                with log_file.open("r") as f:
+                    count += sum(1 for line in f if line.strip())
             self._log_count = count
         except MALFORMED_SESSION_ERRORS as e:
             print(f"Error loading log count for session {self.session_id}: {e}")
@@ -297,6 +292,11 @@ class Session:
     def logs_file(self) -> Path:
         return self.session_dir / f"logs_{self.session_id}.jsonl"
 
+    def _log_files(self):
+        if self.logs_file.exists():
+            yield self.logs_file
+        yield from (self.session_dir / LOG_BATCH_DIRECTORY).glob("*.jsonl")
+
     @property
     def exceptions_file(self) -> Path:
         return self.session_dir / f"exceptions_{self.session_id}.jsonl"
@@ -315,16 +315,15 @@ class Session:
         return _read_jsonl_file(self.trace_file)
 
     def get_logs(self) -> list[dict]:
-        if not self.logs_file.exists():
-            return []
         logs = []
-        with open(self.logs_file, "r") as f:
-            for line in f:
-                if line.strip():
-                    try:
-                        logs.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
+        for log_file in self._log_files():
+            with log_file.open("r") as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            logs.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
         return logs
 
     def get_exceptions(self) -> list[dict]:

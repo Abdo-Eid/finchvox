@@ -74,32 +74,25 @@ def test_export_returns_success():
     response = servicer.Export(request, context)
 
     # Verify response structure
-    assert hasattr(response, "partial_success")
-    assert response.partial_success.rejected_spans == 0
-    assert response.partial_success.error_message == ""
+    assert not response.HasField("partial_success")
 
 
 def test_export_handles_errors():
-    """Test that Export() logs errors and continues (doesn't crash)."""
+    """A rejected span does not stop the rest of the batch."""
     mock_writer = Mock()
-    # Make writer raise an exception
-    mock_writer.write_span.side_effect = Exception("Test error")
+    mock_writer.write_span.side_effect = [True, False, True]
 
     servicer = TraceCollectorServicer(mock_writer)
 
-    # Create request with 1 span
-    request = create_test_request(num_spans=1)
+    request = create_test_request(num_spans=3)
     context = Mock()
 
     # Call Export - should not raise exception
     response = servicer.Export(request, context)
 
-    # Verify it returns a response (not crash)
-    assert response is not None
-    assert hasattr(response, "partial_success")
-
-    # Error message should be present
-    assert response.partial_success.error_message != ""
+    assert mock_writer.write_span.call_count == 3
+    assert response.partial_success.rejected_spans == 1
+    assert response.partial_success.error_message
 
 
 def test_export_with_multiple_resource_spans():

@@ -88,19 +88,24 @@ class AudioHandler:
                             f"Finalized audio file exceeds {max_bytes} byte limit"
                         )
                     temp_file.write(chunk)
-            try:
-                self._remove_other_recordings(session_dir, keep=destination)
-                os.replace(temp_path, destination)
-            except PermissionError as e:
-                raise RecordingInUseError(
-                    "The current recording is in use, for example being played. "
-                    "Retry the upload once it is closed."
-                ) from e
+            self.install_final_recording(temp_path, destination)
         except BaseException:
             temp_path.unlink(missing_ok=True)
             raise
 
         return total
+
+    @classmethod
+    def install_final_recording(cls, staged: Path, destination: Path) -> None:
+        """Move an already-written recording into its session (same filesystem)."""
+        try:
+            cls._remove_other_recordings(destination.parent, keep=destination)
+            os.replace(staged, destination)
+        except PermissionError as e:
+            raise RecordingInUseError(
+                "The current recording is in use, for example being played. "
+                "Retry the upload once it is closed."
+            ) from e
 
     @staticmethod
     def _remove_other_recordings(session_dir: Path, keep: Path) -> None:

@@ -76,9 +76,10 @@ class UnifiedServer:
         self.max_upload_bytes = max_upload_bytes
 
         # Initialize shared writer instances
-        self.span_writer = SpanWriter(self.data_dir)
         self.log_writer = LogWriter(self.data_dir)
         self.audio_handler = AudioHandler(self.data_dir)
+        self.recordings = LiveKitRecordingReceiver(self.audio_handler)
+        self.span_writer = SpanWriter(self.data_dir, on_write=self.recordings.notify_trace_written)
 
         # Server instances
         self.grpc_server = None
@@ -100,6 +101,7 @@ class UnifiedServer:
             title="FinchVox Unified Server",
             description="Combined collector and UI server for voice AI observability",
             version="0.1.0",
+            lifespan=self.recordings.lifespan,
         )
 
         # Register UI routes first (includes static file mounts)
@@ -118,8 +120,8 @@ class UnifiedServer:
         # LiveKit's own uploads, for agents pointed here with LIVEKIT_OBSERVABILITY_URL
         register_observability_routes(
             app,
-            OtlpHttpReceiver(self.span_writer, self.log_writer),
-            LiveKitRecordingReceiver(self.audio_handler),
+            OtlpHttpReceiver(self.span_writer, self.log_writer, self.recordings.job_logs),
+            self.recordings,
         )
 
         return app

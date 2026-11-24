@@ -14,8 +14,6 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, sta
 from fastapi.responses import JSONResponse, Response
 from loguru import logger
 
-from finchvox.body_limit import limit_latest_route_body
-
 from .audio_handler import AudioHandler, RecordingInUseError, RecordingTooLargeError
 from .config import (
     ALLOWED_AUDIO_FORMATS,
@@ -45,7 +43,10 @@ def register_collector_routes(
         prefix: URL prefix for all collector routes (default: "/collector")
     """
 
-    @app.post(f"{prefix}/audio/{{trace_id}}/chunk")
+    @app.post(
+        f"{prefix}/audio/{{trace_id}}/chunk",
+        max_body_size=MAX_AUDIO_FILE_SIZE + UPLOAD_BODY_MARGIN_BYTES,
+    )
     async def upload_audio_chunk(
         trace_id: str,
         audio: Annotated[UploadFile, File(description="Audio file (WAV format)")],
@@ -170,9 +171,7 @@ def register_collector_routes(
                 detail="Internal server error processing audio upload",
             )
 
-    limit_latest_route_body(app, MAX_AUDIO_FILE_SIZE + UPLOAD_BODY_MARGIN_BYTES)
-
-    @app.post(f"{prefix}/livekit/report")
+    @app.post(f"{prefix}/livekit/report", max_body_size=MAX_JSON_BODY_BYTES)
     async def receive_livekit_report_auto(request: Request):
         """Resolve a SessionReport to its local trace using LiveKit identifiers."""
         try:
@@ -206,9 +205,7 @@ def register_collector_routes(
             content={"status": "success", "trace_id": trace_id},
         )
 
-    limit_latest_route_body(app, MAX_JSON_BODY_BYTES)
-
-    @app.post(f"{prefix}/livekit/{{trace_id}}/report")
+    @app.post(f"{prefix}/livekit/{{trace_id}}/report", max_body_size=MAX_JSON_BODY_BYTES)
     async def receive_livekit_report(trace_id: str, request: Request):
         """Store a local LiveKit SessionReport beside the matching OTel trace."""
         if not re.match(r"^[a-f0-9]{32}$", trace_id):
@@ -229,9 +226,10 @@ def register_collector_routes(
             content={"status": "success", "trace_id": trace_id},
         )
 
-    limit_latest_route_body(app, MAX_JSON_BODY_BYTES)
-
-    @app.post(f"{prefix}/livekit/{{trace_id}}/audio")
+    @app.post(
+        f"{prefix}/livekit/{{trace_id}}/audio",
+        max_body_size=MAX_FINAL_AUDIO_FILE_SIZE + UPLOAD_BODY_MARGIN_BYTES,
+    )
     async def receive_livekit_audio(
         trace_id: str,
         audio: Annotated[UploadFile, File(description="Finalized session recording")],
@@ -275,8 +273,6 @@ def register_collector_routes(
             },
         )
 
-    limit_latest_route_body(app, MAX_FINAL_AUDIO_FILE_SIZE + UPLOAD_BODY_MARGIN_BYTES)
-
     @app.get(f"{prefix}/health")
     async def health_check():
         """
@@ -315,7 +311,7 @@ def register_collector_routes(
                 detail="Failed to list audio chunks",
             )
 
-    @app.post(f"{prefix}/environment/{{trace_id}}")
+    @app.post(f"{prefix}/environment/{{trace_id}}", max_body_size=MAX_JSON_BODY_BYTES)
     async def receive_environment(trace_id: str, request: Request):
         if not re.match(r"^[a-f0-9]{32}$", trace_id):
             raise HTTPException(
@@ -340,5 +336,3 @@ def register_collector_routes(
         logger.info(f"Received environment data for trace {trace_id[:8]}...")
 
         return Response(status_code=status.HTTP_201_CREATED)
-
-    limit_latest_route_body(app, MAX_JSON_BODY_BYTES)

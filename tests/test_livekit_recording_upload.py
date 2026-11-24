@@ -3,7 +3,7 @@ points at Finchvox: a protobuf header holding the session report, the chat histo
 and the audio."""
 
 import json
-import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,10 +28,18 @@ CHAT = {
 
 @pytest.fixture
 def server(tmp_path, monkeypatch):
-    monkeypatch.setattr(livekit_recording, "RECORDING_TRACE_WAIT_SECONDS", 3.0)
-    monkeypatch.setattr(livekit_recording, "RECORDING_TRACE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(livekit_recording, "PENDING_CHECK_SECONDS", 0.05)
     unified = UnifiedServer(data_dir=tmp_path)
-    return unified, TestClient(unified.app), get_session_dir(tmp_path, TRACE_ID)
+    with TestClient(unified.app) as client:
+        yield unified, client, get_session_dir(tmp_path, TRACE_ID)
+
+
+def wait_for(path):
+    deadline = time.monotonic() + 3
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert path.exists()
+    return path
 
 
 def write_span(unified, job_id=JOB_ID):
@@ -41,7 +49,10 @@ def write_span(unified, job_id=JOB_ID):
         name="agent_session",
         start_time_unix_nano=1_000_000_000,
         end_time_unix_nano=9_000_000_000,
-        attributes=[KeyValue(key="job_id", value=AnyValue(string_value=job_id))],
+        attributes=[
+            KeyValue(key="job_id", value=AnyValue(string_value=job_id)),
+            KeyValue(key="room_id", value=AnyValue(string_value="RM_1")),
+        ],
     )
     unified.span_writer.write_span(span, ResourceSpans(), ScopeSpans())
 
@@ -68,9 +79,8 @@ def test_the_report_and_recording_are_attached_to_the_matching_trace(server):
 
     response = upload(client)
 
-    assert response.status_code == 201
-    assert response.json()["trace_id"] == TRACE_ID
-    report = json.loads((session_dir / "livekit_report.json").read_text())
+    assert response.status_code == 202
+    report = json.loads(wait_for(session_dir / "livekit_report.json").read_text())
     assert report["job_id"] == JOB_ID
     assert report["room"] == "test-room"
     assert [item["id"] for item in report["chat_history"]["items"]] == ["m1", "m2"]
@@ -83,31 +93,75 @@ def test_without_transcript_or_audio_only_the_report_is_stored(server):
 
     response = upload(client, chat=False, audio=False)
 
-    assert response.status_code == 201
-    report = json.loads((session_dir / "livekit_report.json").read_text())
+    assert response.status_code == 202
+    report = json.loads(wait_for(session_dir / "livekit_report.json").read_text())
     assert "chat_history" not in report
     assert not (session_dir / "audio.ogg").exists()
 
 
-def test_a_recording_that_arrives_before_its_spans_waits_for_them(server):
+def test_a_recording_is_acknowledged_before_the_sdk_flushes_its_trace(server):
     unified, client, session_dir = server
-    timer = threading.Timer(0.3, write_span, args=(unified,))
-    timer.start()
 
     response = upload(client)
 
-    timer.join()
-    assert response.status_code == 201
-    assert (session_dir / "livekit_report.json").exists()
+    assert response.status_code == 202
+    assert not session_dir.exists()
+    write_span(unified)
+    wait_for(session_dir / "livekit_report.json")
+    assert (session_dir / "audio.ogg").read_bytes() == AUDIO
 
 
-def test_a_recording_with_no_matching_trace_is_refused_after_waiting(server, monkeypatch):
-    _, client, _ = server
-    monkeypatch.setattr(livekit_recording, "RECORDING_TRACE_WAIT_SECONDS", 0.2)
+def test_same_room_is_not_a_match_for_a_different_job(server):
+    unified, client, session_dir = server
+    write_span(unified, job_id="AJ_other")
 
     response = upload(client)
 
-    assert response.status_code == 404
+    assert response.status_code == 202
+    time.sleep(0.15)
+    assert not (session_dir / "livekit_report.json").exists()
+
+
+def test_staged_recording_survives_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(livekit_recording, "PENDING_CHECK_SECONDS", 0.05)
+    with TestClient(UnifiedServer(data_dir=tmp_path).app) as client:
+        assert upload(client).status_code == 202
+
+    restarted = UnifiedServer(data_dir=tmp_path)
+    write_span(restarted)
+    with TestClient(restarted.app):
+        wait_for(get_session_dir(tmp_path, TRACE_ID) / "livekit_report.json")
+
+
+def test_duplicate_upload_does_not_consume_another_pending_slot(server, monkeypatch):
+    monkeypatch.setattr(livekit_recording, "PENDING_MAX_RECORDINGS", 1)
+    unified, client, session_dir = server
+    assert upload(client).status_code == 202
+    assert upload(client, audio=False).status_code == 202
+    assert upload(client, header_bytes=header("AJ_second")).status_code == 507
+    write_span(unified)
+    wait_for(session_dir / "livekit_report.json")
+    assert (session_dir / "audio.ogg").read_bytes() == AUDIO
+
+
+def test_failed_upload_does_not_leave_a_pending_recording(server, monkeypatch):
+    monkeypatch.setattr(livekit_recording, "MAX_FINAL_AUDIO_FILE_SIZE", len(AUDIO) - 1)
+    unified, client, _ = server
+    assert upload(client).status_code == 413
+    pending = unified.data_dir / livekit_recording.PENDING_DIRECTORY
+    assert list(pending.iterdir()) == []
+
+
+def test_unmatched_upload_expires(server, monkeypatch):
+    monkeypatch.setattr(livekit_recording, "PENDING_MAX_AGE_SECONDS", 0)
+    unified, client, session_dir = server
+    assert upload(client).status_code == 202
+    pending = unified.data_dir / livekit_recording.PENDING_DIRECTORY
+    deadline = time.monotonic() + 3
+    while any(pending.iterdir()) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not any(pending.iterdir())
+    assert not session_dir.exists()
 
 
 def test_a_header_that_is_not_livekits_is_rejected(server):
@@ -124,6 +178,7 @@ def test_the_upload_token_is_never_stored(server):
     write_span(unified)
 
     upload(client, headers={"Authorization": "Bearer abc.do-not-store-me.xyz"})
+    wait_for(session_dir / "livekit_report.json")
 
     stored = "".join(
         p.read_text(errors="ignore") for p in session_dir.iterdir() if p.is_file()

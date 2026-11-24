@@ -14,15 +14,16 @@ import shutil
 import socket
 import subprocess
 import time
+import tomllib
 import urllib.request
 import uuid
 import zipfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-yaml = pytest.importorskip("yaml")
 
 
 def _compose() -> dict:
@@ -62,15 +63,16 @@ class TestConfiguration:
         # Started directly, so `docker stop` reaches the server's shutdown handler.
         assert command.startswith('CMD ["finchvox", "start"')
 
-    def test_both_installs_leave_out_uvicorns_optional_packages(self):
+    def test_image_uses_plain_uvicorn_from_project_dependencies(self):
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         dockerfile = (ROOT / "Dockerfile").read_text()
-        skipped = dockerfile.split('ARG SKIP_PACKAGES="', 1)[1].split('"', 1)[0]
-        installs = [line for line in dockerfile.splitlines() if "uv sync" in line]
+        uvicorn = [
+            dep for dep in project["project"]["dependencies"] if dep.startswith("uvicorn")
+        ]
 
-        for package in ("uvloop", "httptools", "websockets", "watchfiles"):
-            assert f"--no-install-package {package}" in skipped
-        assert len(installs) == 2
-        assert all("${SKIP_PACKAGES}" in line for line in installs)
+        assert len(uvicorn) == 1
+        assert uvicorn[0].startswith("uvicorn>=")
+        assert "--no-install-package" not in dockerfile
 
     def test_finchvox_is_rebuilt_from_the_copied_source(self):
         # uv's build cache is keyed on pyproject.toml, so without this a rebuild

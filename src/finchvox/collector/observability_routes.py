@@ -11,9 +11,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from finchvox.body_limit import limit_latest_route_body
-
-from .audio_handler import RecordingInUseError, RecordingTooLargeError
+from .audio_handler import RecordingTooLargeError
 from .config import (
     MAX_FINAL_AUDIO_FILE_SIZE,
     MAX_JSON_BODY_BYTES,
@@ -22,7 +20,7 @@ from .config import (
 )
 from .livekit_recording import (
     LiveKitRecordingReceiver,
-    NoMatchingTrace,
+    PendingRecordingsFull,
     RecordingUploadError,
     UnsupportedRecordingFormat,
 )
@@ -43,9 +41,8 @@ _OTLP_ERRORS = {
 _RECORDING_ERRORS = {
     RecordingUploadError: status.HTTP_400_BAD_REQUEST,
     UnsupportedRecordingFormat: status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-    NoMatchingTrace: status.HTTP_404_NOT_FOUND,
+    PendingRecordingsFull: status.HTTP_507_INSUFFICIENT_STORAGE,
     RecordingTooLargeError: status.HTTP_413_CONTENT_TOO_LARGE,
-    RecordingInUseError: status.HTTP_409_CONFLICT,
 }
 
 
@@ -67,8 +64,8 @@ def _add_otlp_route(
         receive,
         methods=["POST"],
         name=f"receive_otlp_{signal}",
+        max_body_size=MAX_OTLP_BYTES,
     )
-    limit_latest_route_body(app, MAX_OTLP_BYTES)
 
 
 def register_observability_routes(
@@ -78,24 +75,24 @@ def register_observability_routes(
     _add_otlp_route(app, "logs", otlp.receive_logs)
     _add_otlp_route(app, "metrics", otlp.receive_metrics)
 
-    @app.post("/observability/recordings/v0")
+    @app.post(
+        "/observability/recordings/v0",
+        max_body_size=(
+            MAX_FINAL_AUDIO_FILE_SIZE + 2 * MAX_JSON_BODY_BYTES + UPLOAD_BODY_MARGIN_BYTES
+        ),
+    )
     async def receive_livekit_recording(
         header: Annotated[UploadFile, File()],
         chat_history: Annotated[UploadFile | None, File()] = None,
         audio: Annotated[UploadFile | None, File()] = None,
     ):
         try:
-            trace_id = await recordings.receive(header, chat_history, audio)
+            await recordings.receive(header, chat_history, audio)
         except tuple(_RECORDING_ERRORS) as e:
             raise HTTPException(
                 status_code=_RECORDING_ERRORS[type(e)], detail=str(e)
             ) from e
         return JSONResponse(
-            status_code=status.HTTP_201_CREATED,
-            content={"status": "success", "trace_id": trace_id},
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"status": "accepted"},
         )
-
-    limit_latest_route_body(
-        app,
-        MAX_FINAL_AUDIO_FILE_SIZE + 2 * MAX_JSON_BODY_BYTES + UPLOAD_BODY_MARGIN_BYTES,
-    )

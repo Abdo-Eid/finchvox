@@ -3,6 +3,7 @@ LIVEKIT_OBSERVABILITY_URL points at Finchvox."""
 
 import gzip
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,7 +21,13 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
 )
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord, ResourceLogs, ScopeLogs
-from opentelemetry.proto.metrics.v1.metrics_pb2 import ResourceMetrics
+from opentelemetry.proto.metrics.v1.metrics_pb2 import (
+    Gauge,
+    Metric,
+    NumberDataPoint,
+    ResourceMetrics,
+    ScopeMetrics,
+)
 from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, ScopeSpans, Span
 
 from finchvox.collector.config import get_session_dir
@@ -110,12 +117,17 @@ class TestLogs:
 class TestMetrics:
     def test_metrics_are_acknowledged_but_not_stored(self, server):
         client, data_dir = server
-        body = ExportMetricsServiceRequest(resource_metrics=[ResourceMetrics()]).SerializeToString()
+        metric = Metric(name="test.gauge", gauge=Gauge(data_points=[NumberDataPoint(as_int=1)]))
+        body = ExportMetricsServiceRequest(
+            resource_metrics=[ResourceMetrics(scope_metrics=[ScopeMetrics(metrics=[metric])])]
+        ).SerializeToString()
 
         response = post(client, "/observability/metrics/otlp/v0", body)
 
         assert response.status_code == 200
-        ExportMetricsServiceResponse.FromString(response.content)
+        result = ExportMetricsServiceResponse.FromString(response.content)
+        assert result.partial_success.rejected_data_points == 1
+        assert "not stored" in result.partial_success.error_message
         assert not (data_dir / "sessions").exists() or not any((data_dir / "sessions").iterdir())
 
 
@@ -169,3 +181,37 @@ def test_the_upload_token_is_never_stored(server):
     stored = "".join(p.read_text() for p in data_dir.rglob("*") if p.is_file())
     assert stored
     assert "do-not-store-me" not in stored
+
+
+@pytest.mark.parametrize(
+    ("signal", "body", "response_type", "rejected_field"),
+    [
+        ("traces", span_request(), ExportTraceServiceResponse, "rejected_spans"),
+        ("logs", log_request(), ExportLogsServiceResponse, "rejected_log_records"),
+    ],
+)
+def test_disk_write_failure_is_reported(server, monkeypatch, signal, body, response_type, rejected_field):
+    client, _ = server
+    original_open = Path.open
+
+    def fail_append(path, mode="r", *args, **kwargs):
+        if path.suffix == ".jsonl" and mode == "a":
+            raise OSError("synthetic disk failure")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_append)
+    response = post(client, f"/observability/{signal}/otlp/v0", body)
+
+    assert response.status_code == 200
+    result = response_type.FromString(response.content)
+    assert getattr(result.partial_success, rejected_field) == 1
+    assert result.partial_success.error_message
+
+
+def test_logs_without_a_trace_are_not_reported_as_stored(server):
+    client, _ = server
+    response = post(client, "/observability/logs/otlp/v0", log_request(trace_id=b""))
+    assert response.status_code == 200
+    result = ExportLogsServiceResponse.FromString(response.content)
+    assert result.partial_success.rejected_log_records == 1
+    assert "trace" in result.partial_success.error_message.lower()

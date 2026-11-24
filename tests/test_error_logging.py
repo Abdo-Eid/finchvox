@@ -103,7 +103,8 @@ def test_trace_service_logs_traceback(error_records):
 
     response = TraceCollectorServicer(span_writer).Export(request, Mock())
 
-    assert ERROR_TEXT in response.partial_success.error_message
+    assert response.partial_success.rejected_spans == 1
+    assert ERROR_TEXT not in response.partial_success.error_message
     _assert_traceback_logged(error_records)
 
 
@@ -113,8 +114,9 @@ def test_log_service_logs_traceback(error_records):
     request = ExportLogsServiceRequest()
     request.resource_logs.add().scope_logs.add().log_records.add()
 
-    LogCollectorServicer(log_writer).Export(request, Mock())
+    response = LogCollectorServicer(log_writer).Export(request, Mock())
 
+    assert response.partial_success.rejected_log_records == 1
     _assert_traceback_logged(error_records)
 
 

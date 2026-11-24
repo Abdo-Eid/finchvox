@@ -21,8 +21,8 @@ def load_livekit_report(session_dir: Path) -> dict[str, Any] | None:
     if not report_path.exists():
         return None
     try:
-        report = json.loads(report_path.read_text())
-    except (OSError, json.JSONDecodeError):
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return report if isinstance(report, dict) else None
 

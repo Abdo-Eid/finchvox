@@ -1,6 +1,7 @@
 from pathlib import Path
 
 GRPC_PORT = 4317
+LOG_BATCH_DIRECTORY = "log-batches"
 HTTP_PORT = 3000
 MAX_WORKERS = 10
 
@@ -32,11 +33,6 @@ MAX_JSON_BODY_BYTES = 64 * BYTES_PER_MB
 # Largest OpenTelemetry-over-HTTP batch, after unzipping. It is read into memory to
 # decode; exporters send batches of at most a few hundred records.
 MAX_OTLP_BYTES = 64 * BYTES_PER_MB
-
-# A LiveKit recording upload can arrive before the session's spans, which LiveKit
-# uploads in batches every few seconds. Wait this long for them before refusing.
-RECORDING_TRACE_WAIT_SECONDS = 20.0
-RECORDING_TRACE_POLL_SECONDS = 0.5
 
 # Largest session zip accepted by the UI upload. Change it at startup with
 # `finchvox start --max-upload-mb N`; the two limits below scale with it.

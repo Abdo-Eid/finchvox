@@ -2,16 +2,14 @@
 
 LiveKit Agents uploads its observability data this way when
 ``LIVEKIT_OBSERVABILITY_URL`` points at Finchvox. Spans and logs are stored exactly
-as if they had arrived over gRPC; metrics are acknowledged but not stored yet.
+as if they had arrived over gRPC; metrics are not stored.
 """
 
 import zlib
 
 from google.protobuf.message import DecodeError
-from loguru import logger
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
     ExportLogsServiceRequest,
-    ExportLogsServiceResponse,
 )
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
     ExportMetricsServiceRequest,
@@ -19,10 +17,10 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
 )
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
-    ExportTraceServiceResponse,
 )
 
 from .config import MAX_OTLP_BYTES
+from .livekit_job_logs import LiveKitJobLogs
 from .log_writer import LogWriter
 from .otlp_requests import write_logs_request, write_trace_request
 from .writer import SpanWriter
@@ -81,23 +79,32 @@ def _parse(message_type, data: bytes):
 class OtlpHttpReceiver:
     """Stores OTLP/HTTP exports with the same writers the gRPC collector uses."""
 
-    def __init__(self, span_writer: SpanWriter, log_writer: LogWriter):
+    def __init__(
+        self, span_writer: SpanWriter, log_writer: LogWriter, job_logs: LiveKitJobLogs
+    ):
         self.span_writer = span_writer
         self.log_writer = log_writer
+        self.job_logs = job_logs
 
     def receive_traces(self, body: bytes, content_encoding: str | None) -> bytes:
         request = _parse(ExportTraceServiceRequest, unpack_body(body, content_encoding))
-        names = write_trace_request(request, self.span_writer)
-        logger.info(f"Processed {len(names)} spans over HTTP spans={names}")
-        return ExportTraceServiceResponse().SerializeToString()
+        return write_trace_request(request, self.span_writer).SerializeToString()
 
     def receive_logs(self, body: bytes, content_encoding: str | None) -> bytes:
         request = _parse(ExportLogsServiceRequest, unpack_body(body, content_encoding))
-        count = write_logs_request(request, self.log_writer)
-        logger.info(f"Processed {count} log records over HTTP")
-        return ExportLogsServiceResponse().SerializeToString()
+        return write_logs_request(request, self.log_writer, self.job_logs.save).SerializeToString()
 
     def receive_metrics(self, body: bytes, content_encoding: str | None) -> bytes:
-        # Decoded to reject bad input, then dropped: Finchvox does not store metrics yet.
-        _parse(ExportMetricsServiceRequest, unpack_body(body, content_encoding))
-        return ExportMetricsServiceResponse().SerializeToString()
+        request = _parse(ExportMetricsServiceRequest, unpack_body(body, content_encoding))
+        rejected = sum(
+            len(getattr(metric, data).data_points)
+            for resource in request.resource_metrics
+            for scope in resource.scope_metrics
+            for metric in scope.metrics
+            if (data := metric.WhichOneof("data")) is not None
+        )
+        response = ExportMetricsServiceResponse()
+        if rejected:
+            response.partial_success.rejected_data_points = rejected
+            response.partial_success.error_message = "Raw OTLP metrics are not stored by Finchvox."
+        return response.SerializeToString()

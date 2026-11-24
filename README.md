@@ -79,13 +79,13 @@ OpenTelemetry provides the trace/latency structure. A `SessionReport` improves t
 
 Requires Python 3.12–3.14. The supported voice SDK baselines are LiveKit Agents 1.8.9+ and Pipecat 1.14+.
 
-Into your agent's project, from this fork's GitHub repository:
+Install the server in its own environment from this fork. Only install it in your agent's project if you choose the explicit Python integration below:
 
 ```bash
-uv add "finchvox @ git+https://github.com/Abdo-Eid/finchvox.git@livekit-agents"
+uv add "finchvox @ git+https://github.com/Abdo-Eid/finchvox.git@main"
 ```
 
-That gives the agent the library and also the `finchvox` command for the server. Keep the Git URL: `pip install finchvox` or `uv add finchvox` installs the original project from PyPI, which has none of the LiveKit work.
+That gives you the `finchvox` server command. Keep the Git URL: `pip install finchvox` or `uv add finchvox` installs the original project from PyPI, not this fork.
 
 If you have this repository checked out next to your agent, an editable install picks up changes at once (use the path of your checkout):
 
@@ -143,7 +143,21 @@ docker compose up -d --build
 
 See [`docs/DOCKER.md`](docs/DOCKER.md) for settings, backups and Windows notes. On Windows, check that `http://localhost:3000/collector/health` answers from Finchvox: a dev server on port 3000 can take `localhost` first.
 
-### 3. Add two lines to the agent
+### 3. Connect the agent without adding code
+
+Set this in the agent's `.env`, then restart the agent:
+
+```bash
+LIVEKIT_OBSERVABILITY_URL=http://localhost:3000
+```
+
+Keep session recording and traces enabled. On self-hosted LiveKit, set `record=True` in `session.start()` if recording is not already enabled. The agent does not need Finchvox installed. Make and end a call, then open it in the Sessions list.
+
+This **redirects** LiveKit's observability uploads: its Cloud dashboard does not receive a second copy. It does not change where the call's media or models run. For recording options, troubleshooting, and the SDK compatibility caveat, see [the zero-code setup guide](docs/LIVEKIT_LOCAL_SETUP.md#12-no-code-hookup-with-livekit_observability_url).
+
+### Alternative: Keep sending observability to LiveKit Cloud
+
+If you want each call in **both** Finchvox and LiveKit Cloud, leave `LIVEKIT_OBSERVABILITY_URL` unset and use the explicit Python integration. Install Finchvox into the agent's environment, then add:
 
 ```python
 import finchvox
@@ -169,16 +183,6 @@ async def on_session_end(ctx):
 ```
 
 `finalize_session` also accepts `audio_path=...` for a recording of your own, and `endpoint=...`. By default it uploads to port 3000 on the host given to `init_livekit()`.
-
-### Or connect without changing code
-
-Instead of the two lines, set one variable in the agent's `.env` and LiveKit sends the data it normally uploads to LiveKit Cloud to Finchvox instead:
-
-```bash
-LIVEKIT_OBSERVABILITY_URL=http://localhost:3000
-```
-
-LiveKit Cloud's dashboard then receives nothing from the agent, and a self-hosted LiveKit also needs `record=True` in `session.start()`. Use one way or the other, not both. Details and caveats: [setup guide, section 12](docs/LIVEKIT_LOCAL_SETUP.md#12-no-code-hookup-with-livekit_observability_url).
 
 ## Full LiveKit setup guide
 

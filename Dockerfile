@@ -12,20 +12,12 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=0
 WORKDIR /app
 
-# Uvicorn's optional "standard" packages, left out of the image only. Finchvox
-# uses just two (faster event loop and HTTP parsing), and only for the UI and
-# uploads; without them Uvicorn uses Python's built-in ones. This saves about
-# 24 MB. pyproject.toml and uv.lock still list them. See docs/DOCKER.md.
-ARG SKIP_PACKAGES="--no-install-package uvloop --no-install-package httptools \
---no-install-package websockets --no-install-package watchfiles \
---no-install-package pyyaml --no-install-package python-dotenv"
-
 # Dependencies first, so this layer is reused until uv.lock changes. No extras:
 # the server does not need the LiveKit or Pipecat SDKs.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project --no-dev --no-editable ${SKIP_PACKAGES}
+    uv sync --locked --no-install-project --no-dev --no-editable
 
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
@@ -33,7 +25,7 @@ COPY ui ./ui
 # uv reuses a cached build of a local project until pyproject.toml changes, so
 # a rebuild would otherwise install the previous src/ and ui/ files.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-editable --reinstall-package finchvox ${SKIP_PACKAGES}
+    uv sync --locked --no-dev --no-editable --reinstall-package finchvox
 
 # Stage 2 runs it, with only the finished environment: no uv, no source tree.
 FROM python:${PYTHON_VERSION}-slim

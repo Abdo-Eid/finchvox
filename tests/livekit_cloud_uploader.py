@@ -5,7 +5,7 @@ setup installs global OpenTelemetry providers, which must not leak into other
 tests. It follows a real job's order: spans and logs during the call, the
 recording upload at session end, then LiveKit's per-job flush.
 
-Args: observability_url job_id audio_path
+Args: job_id audio_path. Set LIVEKIT_OBSERVABILITY_URL in the environment.
 """
 
 import asyncio
@@ -16,11 +16,14 @@ from pathlib import Path
 
 import aiohttp
 from livekit.agents import AgentSession, llm
+from livekit.agents.job import _observability_url
 from livekit.agents.observability import Tagger
 from livekit.agents.telemetry import traces
 from livekit.agents.voice.report import SessionReport
 
-url, job_id, audio_path = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+job_id, audio_path = sys.argv[1], Path(sys.argv[2])
+url = _observability_url("ws://example.invalid")
+assert url is not None
 room_id = "RM_compat"
 
 traces._setup_cloud_tracer(room_id=room_id, job_id=job_id, observability_url=url)
@@ -30,11 +33,13 @@ with (
     traces.tracer.start_as_current_span("agent_turn"),
 ):
     logging.getLogger("compat-agent").warning("hello from the agent")
+logging.getLogger("compat-agent").warning("outside an active span")
 
 
 async def end_session() -> None:
     chat = llm.ChatContext()
     chat.add_message(role="user", content="hello")
+    chat.add_message(role="user", content="مرحبا")
     chat.add_message(role="assistant", content="hi there")
     session = AgentSession(vad=None)
     session._opts.recording_options = {

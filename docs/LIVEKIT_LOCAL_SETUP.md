@@ -28,7 +28,7 @@ There is one important distinction: **LiveKit media transport and LiveKit Cloud 
 | Self-hosted LiveKit | Works as is | Also needs `record=True` in `session.start()` |
 | How it relies on LiveKit | Documented SDK features | An SDK setting LiveKit does not document; Finchvox tests it against each supported SDK version |
 
-Use one or the other, not both: with both, every span reaches Finchvox twice.
+Start with [the zero-code hookup](#12-no-code-hookup-with-livekit_observability_url) unless you want a second copy in LiveKit Cloud. Use one or the other, not both: with both, every span reaches Finchvox twice.
 
 ## Prerequisites
 
@@ -41,16 +41,16 @@ Finchvox needs LiveKit Agents 1.8.9 or newer. It reads the `lk.pii.*` and GenAI 
 
 ## 1. Install the fork
 
-In your agent's project, install it from this fork's GitHub repository:
+Install Finchvox in the environment where you'll run the server. Install it inside the agent's project only if you choose the explicit Python hookup:
 
 ```bash
-uv add "finchvox @ git+https://github.com/Abdo-Eid/finchvox.git@livekit-agents"
+uv add "finchvox @ git+https://github.com/Abdo-Eid/finchvox.git@main"
 ```
 
 or with pip:
 
 ```bash
-pip install "finchvox @ git+https://github.com/Abdo-Eid/finchvox.git@livekit-agents"
+pip install "finchvox @ git+https://github.com/Abdo-Eid/finchvox.git@main"
 ```
 
 This installs the library your agent imports and the `finchvox` command that runs the server. Always include the Git URL: plain `pip install finchvox` installs the original project from PyPI, which has none of the LiveKit support described here.
@@ -98,6 +98,8 @@ uv run finchvox start --data-dir ./.finchvox-data
 ```
 
 ## 3. Add Finchvox to your LiveKit agent
+
+This section covers the explicit Python hookup. If you only want local replay, skip to [section 12](#12-no-code-hookup-with-livekit_observability_url).
 
 Two lines connect an agent to Finchvox. To connect without changing the agent's code, see section 12 instead.
 
@@ -365,11 +367,11 @@ Only Finchvox's HTTP port is used. Start the agent as usual; the session appears
 | Upload | Path | What Finchvox does with it |
 |---|---|---|
 | Traces | `/observability/traces/otlp/v0` | Stores them like spans sent over gRPC |
-| Logs | `/observability/logs/otlp/v0` | Stores them like logs sent over gRPC |
+| Logs | `/observability/logs/otlp/v0` | Matches ordinary logs by trace ID or LiveKit job ID |
 | Recording | `/observability/recordings/v0` | Reads the session report and chat history it contains, matches them to the trace by job ID, and stores the report and the audio |
-| Metrics | `/observability/metrics/otlp/v0` | Accepts them, but does not store them yet |
+| Metrics | `/observability/metrics/otlp/v0` | Reports the raw data points as not stored. Replay metrics still come from spans and the session report. |
 
-LiveKit sends the recording as soon as the session ends, while spans are uploaded in batches every few seconds. If the recording arrives first, Finchvox waits up to 20 seconds for the session's spans before answering.
+LiveKit can send the recording before its final span batch. Finchvox replies as soon as it saves the upload, then attaches it when it finds a trace with the same LiveKit job ID. Pending uploads survive a Finchvox restart. Keep traces on to get a playable session: pending recordings with no matching trace expire after 24 hours, with a warning in the server log. The pending folder holds up to eight uploads; additional uploads are refused until a slot opens.
 
 Each upload carries a token that LiveKit signs with your API secret. Finchvox ignores it and never stores it; checking it would mean giving Finchvox your LiveKit API secret. As everywhere else, Finchvox relies on listening only on your own machine.
 
@@ -396,6 +398,8 @@ LiveKit only uploads while session recording is on:
 ## 13. Troubleshooting
 
 ### Session never appears
+
+For the zero-code hookup, check that the agent was restarted with `LIVEKIT_OBSERVABILITY_URL`, the URL reaches Finchvox's HTTP port, and session recording and traces are enabled. The checks below are for the explicit Python hookup.
 
 Check that:
 
@@ -426,6 +430,8 @@ Then retry the report upload. Automatic correlation needs at least one completed
 ### Logs are missing
 
 Make sure `capture_logs=True` and your application uses Python `logging`. Some logs emitted outside an active span may not have trace correlation; they can still be exported, but a per-session UI cannot reliably assign an uncorrelated log to a session.
+
+When Finchvox cannot store a span or log, it reports the rejected count in the OpenTelemetry response. Check the Finchvox server log for stored and rejected counts and details of any write errors.
 
 ## References
 
