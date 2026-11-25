@@ -16,7 +16,10 @@ This release merges the LiveKit insights fork into `main`, on top of upstream 0.
 
 ### Added
 
+- Static Finchvox documentation for GitHub Pages, with a guided quickstart, LiveKit and Docker examples, and a synthetic replay walkthrough.
+- A GitHub Actions workflow for publishing tested Linux amd64 and arm64 Finchvox images to GitHub Container Registry.
 - The sessions list shows 50 sessions per page, with Previous and Next buttons and the range shown in its caption. The Sessions, LiveKit and Errors counts at the top still cover every session. `GET /api/sessions` takes `?page=` and returns the page details and `totals`.
+- Delete a saved session, including its recording, transcript, traces and logs, from the session page after confirming.
 - The span and log inspectors can be resized by dragging their left edge, or with the arrow keys on it, between 320 and 900 px. The width is remembered with the other display preferences.
 - Log messages are formatted for reading. In the log inspector, Python dictionaries and lists are laid out over several lines and escaped `\n` sequences become line breaks. The log table shows a one-line preview, and search matches the decoded text.
 
@@ -43,7 +46,7 @@ This release merges the LiveKit insights fork into `main`, on top of upstream 0.
 
 ### Changed
 
-- The quick start now recommends the environment-variable hookup. The explicit Python integration still supports sending a second copy to LiveKit Cloud.
+- The quick start recommends the environment-variable hookup for room calls and documents the tested Python hookup for terminal mic replay without a LiveKit room server. The Python integration also supports sending a second copy to LiveKit Cloud.
 
 - FastAPI 0.165 now enforces the existing per-route HTTP upload limits directly. File and archive checks are unchanged.
 - Finchvox uses plain Uvicorn by default, both locally and in Docker. Docker no longer needs to exclude Uvicorn's optional packages during the build.
@@ -66,6 +69,7 @@ This release merges the LiveKit insights fork into `main`, on top of upstream 0.
 ### Fixed
 
 - The zero-code LiveKit receiver saves recordings before replying, then attaches them by job ID when the trace arrives. This avoids losing a short call's recording while the SDK is waiting to flush its final spans.
+- When the LiveKit SDK sends a separate shutdown trace for the same job, Finchvox attaches the recording and matching logs to the call trace instead of leaving them queued.
 - Ordinary LiveKit HTTP logs emitted outside an active span now appear in the matching session when LiveKit supplies a job ID. Raw OpenTelemetry metrics are reported as not stored instead of being silently acknowledged.
 - OpenTelemetry uploads over HTTP and gRPC now report how many spans or logs Finchvox could not save, instead of counting them as stored.
 

@@ -2,6 +2,23 @@
 
 The repository root has a `Dockerfile` and a `compose.yaml` for the Finchvox server: the UI, HTTP uploads and the OpenTelemetry collector. Your agent keeps running wherever it runs now; only Finchvox moves into a container.
 
+## Pull a prebuilt image
+
+For an existing room-based LiveKit agent on the same machine, the prebuilt image needs only the HTTP port:
+
+```sh
+docker pull ghcr.io/abdo-eid/finchvox:main
+docker run -d --name finchvox -p 127.0.0.1:3000:3000 -v finchvox-data:/data ghcr.io/abdo-eid/finchvox:main
+```
+
+Set `LIVEKIT_OBSERVABILITY_URL=http://localhost:3000` in the agent's environment and restart it with recording and traces enabled. End a call and open it at <http://localhost:3000>. This sends the SDK's observability uploads to Finchvox instead of LiveKit Cloud; it does not change the call's media or models. The Python hooks need the gRPC port as well: add `-p 127.0.0.1:4317:4317` when creating the container.
+
+## Publishing the image
+
+The [Publish Finchvox image](../.github/workflows/image.yml) workflow runs on `main` and can also be started manually from the Actions tab. It builds for Linux `amd64` and `arm64`, reusing cached Docker layers per architecture. Each runner smoke-tests its built image without rebuilding. Only after both pass does the workflow publish the combined `main` and `sha-<commit>` tags to GitHub Container Registry (GHCR).
+
+On first publish, GitHub creates the package as private. In the package's settings, change **Visibility** to **Public**, then test `docker pull ghcr.io/abdo-eid/finchvox:main` from a Docker client not logged in to GHCR. Also open the local dashboard after starting that image before advertising the quickstart link. Until the public image is available, use the source build below.
+
 ## Start and stop
 
 ```bash

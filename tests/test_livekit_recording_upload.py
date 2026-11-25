@@ -13,9 +13,11 @@ from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, ScopeSpans, Sp
 
 from finchvox.collector import livekit_recording
 from finchvox.collector.config import get_session_dir
+from finchvox.collector.livekit_reports import resolve_livekit_trace_id
 from finchvox.server import UnifiedServer
 
 TRACE_ID = "0123456789abcdef0123456789abcdef"
+OTHER_TRACE_ID = "fedcba9876543210fedcba9876543210"
 JOB_ID = "AJ_recording"
 AUDIO = b"OggS" + bytes(range(256)) * 8
 CHAT = {
@@ -42,11 +44,11 @@ def wait_for(path):
     return path
 
 
-def write_span(unified, job_id=JOB_ID):
+def write_span(unified, job_id=JOB_ID, *, trace_id=TRACE_ID, name="agent_session"):
     span = Span(
-        trace_id=bytes.fromhex(TRACE_ID),
+        trace_id=bytes.fromhex(trace_id),
         span_id=bytes.fromhex("2222222222222222"),
-        name="agent_session",
+        name=name,
         start_time_unix_nano=1_000_000_000,
         end_time_unix_nano=9_000_000_000,
         attributes=[
@@ -109,6 +111,29 @@ def test_a_recording_is_acknowledged_before_the_sdk_flushes_its_trace(server):
     write_span(unified)
     wait_for(session_dir / "livekit_report.json")
     assert (session_dir / "audio.ogg").read_bytes() == AUDIO
+
+
+def test_a_recording_waits_for_the_call_when_its_shutdown_trace_arrives_first(server):
+    unified, client, session_dir = server
+    write_span(unified, trace_id=OTHER_TRACE_ID, name="session_end_upload")
+    shutdown = get_session_dir(unified.data_dir, OTHER_TRACE_ID)
+    report = {"job_id": JOB_ID}
+    assert resolve_livekit_trace_id(unified.data_dir, report, exact_job=True) is None
+    assert upload(client).status_code == 202
+    write_span(unified)
+
+    wait_for(session_dir / "livekit_report.json")
+    assert (session_dir / "audio.ogg").read_bytes() == AUDIO
+    assert not (shutdown / "livekit_report.json").exists()
+    assert not (shutdown / "audio.ogg").exists()
+
+
+def test_two_call_traces_with_the_same_job_are_still_ambiguous(server):
+    unified, _, _ = server
+    write_span(unified)
+    write_span(unified, trace_id=OTHER_TRACE_ID)
+
+    assert resolve_livekit_trace_id(unified.data_dir, {"job_id": JOB_ID}, exact_job=True) is None
 
 
 def test_same_room_is_not_a_match_for_a_different_job(server):

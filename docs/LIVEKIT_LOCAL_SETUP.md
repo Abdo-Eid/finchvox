@@ -21,21 +21,22 @@ There is one important distinction: **LiveKit media transport and LiveKit Cloud 
 
 ## Two ways to connect
 
-| | Two lines of code (sections 3–5) | No code: one environment variable (section 12) |
+| | Two lines of code (sections 3–5) | Redirect the SDK's uploads (section 12) |
 |---|---|---|
 | What you change | Add `init_livekit()` and `on_session_end` to the agent | Set `LIVEKIT_OBSERVABILITY_URL` in the agent's `.env` |
 | LiveKit Cloud's dashboard | Keeps receiving its own copy | Receives nothing from the agent |
 | Self-hosted LiveKit | Works as is | Also needs `record=True` in `session.start()` |
-| How it relies on LiveKit | Documented SDK features | An SDK setting LiveKit does not document; Finchvox tests it against each supported SDK version |
+| `lk agent console --record` (terminal mic, no room server) | Tested with a real mic call | Requires `record=True` in `session.start()`; tested with synthetic console audio on Agents 1.8.11 and 1.8.13 |
+| How it relies on LiveKit | Documented SDK features | An undocumented SDK setting; Finchvox's tests exercise the SDK version you install |
 
-Start with [the zero-code hookup](#12-no-code-hookup-with-livekit_observability_url) unless you want a second copy in LiveKit Cloud. Use one or the other, not both: with both, every span reaches Finchvox twice.
+Start with [the environment-variable hookup](#12-no-code-hookup-with-livekit_observability_url) for room-based calls, or the Python hookup for [terminal mic replay](#terminal-voice-calls-without-a-livekit-server) or a second copy in LiveKit Cloud. Use one or the other, not both: with both, every span reaches Finchvox twice.
 
 ## Prerequisites
 
 - Python 3.12–3.14
 - `uv` (recommended) or `pip`
 - a working LiveKit Agents Python project
-- a LiveKit server (LiveKit Cloud or self-hosted)
+- a LiveKit server (LiveKit Cloud or self-hosted) **only if you're making room-based calls**
 
 Finchvox needs LiveKit Agents 1.8.9 or newer. It reads the `lk.pii.*` and GenAI telemetry attributes those releases write, and does not read the attribute names used before 1.8. The span and attribute names were last checked against 1.8.11.
 
@@ -99,7 +100,7 @@ uv run finchvox start --data-dir ./.finchvox-data
 
 ## 3. Add Finchvox to your LiveKit agent
 
-This section covers the explicit Python hookup. If you only want local replay, skip to [section 12](#12-no-code-hookup-with-livekit_observability_url).
+This section covers the explicit Python hookup. If you only want local replay of room calls, see [section 12](#12-no-code-hookup-with-livekit_observability_url).
 
 Two lines connect an agent to Finchvox. To connect without changing the agent's code, see section 12 instead.
 
@@ -214,6 +215,30 @@ A runnable version lives in [`examples/livekit/agent.py`](../examples/livekit/ag
 ## 7. Audio replay
 
 OpenTelemetry spans do **not** contain replayable audio. Finchvox therefore treats audio as a separate session artifact.
+
+### Terminal voice calls without a LiveKit server
+
+The Python hookup was tested end to end with a microphone call from `lk agent console --record`. It sends the console session to Finchvox without joining a LiveKit server. You still need Finchvox running, and your speech and language models may need their own network access.
+
+With the [Python hookup](#3-add-finchvox-to-your-livekit-agent) in place and `LIVEKIT_OBSERVABILITY_URL` unset, run this from the agent's project:
+
+```bash
+lk agent console --record agent.py
+```
+
+Speak to the agent, then press `q` to end the call and let it finish saving. Open the new session in Finchvox and check the audio, transcript, traces and logs. The CLI also writes audio and `session_report.json` to `console-recordings/`. Without `--record`, don't expect a console recording.
+
+#### Terminal replay without installing Finchvox in the agent
+
+If you already use `LIVEKIT_OBSERVABILITY_URL`, you can keep using it and add `record=True` to your existing `session.start(...)` call:
+
+```python
+await session.start(agent=Assistant(), room=ctx.room, record=True)
+```
+
+Still launch with `lk agent console --record agent.py`. In console mode, the CLI flag makes the audio file; `record=True` makes the SDK send it and the rest of the session data to the configured URL. With only the CLI flag and the URL, the audio stays on disk. With `record=True` and the URL but no CLI flag, Finchvox gets the transcript, traces and logs, but no audio. Don't add the Python hookup too.
+
+This combination sent audio, transcript, traces and logs to Finchvox in synthetic tests of the Python console backend with Agents 1.8.11 and 1.8.13 and no LiveKit room server. With `LIVEKIT_URL` set, starting that backend directly without a key and secret failed. The tests used dummy values and no Cloud models; if your agent uses LiveKit Inference, use your normal project credentials. Keep `LIVEKIT_OBSERVABILITY_URL` set if you intend to send the recording to Finchvox rather than LiveKit Cloud.
 
 ### Fully self-hosted LiveKit
 
@@ -351,6 +376,8 @@ finchvox start --data-dir ./.finchvox-data
 
 Finchvox stores each session under its trace ID. Treat this directory as potentially sensitive when `allow_pii=True`, because it can contain transcripts, tool payloads, logs, and recordings.
 
+To remove a finished replay, open it, click **Delete session** (the trash icon), and confirm. This permanently removes that session from this Finchvox server. Download it first if you need a backup. It doesn't delete copies elsewhere, including `console-recordings/` or LiveKit Cloud. End the call first; incoming telemetry can create the session again.
+
 ## 12. No-code hookup with `LIVEKIT_OBSERVABILITY_URL`
 
 LiveKit Agents normally uploads its own observability data (traces, logs, metrics, the transcript and the recording) to LiveKit Cloud. The SDK reads the upload address from the `LIVEKIT_OBSERVABILITY_URL` environment variable and only falls back to LiveKit Cloud when it is unset. Point it at Finchvox and the same uploads arrive there, with no change to the agent's code:
@@ -371,7 +398,7 @@ Only Finchvox's HTTP port is used. Start the agent as usual; the session appears
 | Recording | `/observability/recordings/v0` | Reads the session report and chat history it contains, matches them to the trace by job ID, and stores the report and the audio |
 | Metrics | `/observability/metrics/otlp/v0` | Reports the raw data points as not stored. Replay metrics still come from spans and the session report. |
 
-LiveKit can send the recording before its final span batch. Finchvox replies as soon as it saves the upload, then attaches it when it finds a trace with the same LiveKit job ID. Pending uploads survive a Finchvox restart. Keep traces on to get a playable session: pending recordings with no matching trace expire after 24 hours, with a warning in the server log. The pending folder holds up to eight uploads; additional uploads are refused until a slot opens.
+LiveKit can send the recording before its final span batch. Finchvox replies as soon as it saves the upload, then attaches it when it finds a trace with the same LiveKit job ID. A separate trace that contains only shutdown spans is not a match. If more than one call trace matches, Finchvox leaves the recording queued rather than guessing. Pending uploads survive a Finchvox restart. Keep traces on to get a playable session: pending recordings with no matching trace expire after 24 hours, with a warning in the server log. The pending folder holds up to eight uploads; additional uploads are refused until a slot opens.
 
 Each upload carries a token that LiveKit signs with your API secret. Finchvox ignores it and never stores it; checking it would mean giving Finchvox your LiveKit API secret. As everywhere else, Finchvox relies on listening only on your own machine.
 
@@ -380,6 +407,7 @@ Each upload carries a token that LiveKit signs with your API secret. Finchvox ig
 LiveKit only uploads while session recording is on:
 
 - **LiveKit Cloud:** when the agent does not pass `record=` to `session.start()`, your project's recording setting decides.
+- **Terminal console:** `lk agent console --record` alone writes audio and a report to `console-recordings/`. It doesn't enable the SDK's upload settings. See [terminal replay without installing Finchvox in the agent](#terminal-replay-without-installing-finchvox-in-the-agent) for the extra `record=True` setting.
 - **Self-hosted LiveKit:** there is no project setting, so the agent must turn recording on itself:
 
   ```python

@@ -1,0 +1,99 @@
+name: Publish Finchvox image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: finchvox-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/abdo-eid/finchvox
+
+jobs:
+  build:
+    if: github.repository == 'Abdo-Eid/finchvox' && github.ref == 'refs/heads/main'
+    name: Test and publish Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build and load the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          tags: finchvox:local
+          load: true
+          cache-from: type=gha,scope=finchvox-${{ matrix.arch }}
+          cache-to: type=gha,scope=finchvox-${{ matrix.arch }},mode=max,ignore-error=true
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.13.5'
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Smoke-test the loaded image without rebuilding
+        env:
+          FINCHVOX_DOCKER_TESTS: '1'
+          FINCHVOX_DOCKER_PREBUILT: '1'
+        run: |
+          docker info
+          uv run --locked --extra dev pytest -q tests/test_docker.py -rs
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the exact image tested above
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' finchvox:local)" = "linux/${ARCH}"
+          ref="${IMAGE}:sha-${GITHUB_SHA}-${ARCH}"
+          docker tag finchvox:local "$ref"
+          docker push "$ref"
+
+  publish:
+    name: Publish the multi-architecture image
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the main and commit tags
+        run: |
+          commit="${IMAGE}:sha-${GITHUB_SHA}"
+          sources=("${commit}-amd64" "${commit}-arm64")
+          docker buildx imagetools create --tag "$commit" "${sources[@]}"
+
+          # A rerun for an older commit must not replace the current main image.
+          head="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)"
+          if [[ "$head" == "$GITHUB_SHA" ]]; then
+            docker buildx imagetools create --tag "${IMAGE}:main" "$commit"
+          fi
+          docker buildx imagetools inspect "$commit"

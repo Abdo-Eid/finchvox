@@ -31,6 +31,9 @@ function sessionDetailApp() {
         // Copy state
         spanCopied: false,
 
+        deletingSession: false,
+        deleteError: '',
+
         // Logs view mixin (state and methods from logs_view.js)
         ...logsViewMixin(),
 
@@ -99,6 +102,34 @@ function sessionDetailApp() {
 
         isAgentInsightsView() {
             return ['conversation', 'trace', 'logs'].includes(this.selectedView);
+        },
+
+        openDeleteDialog() {
+            if (!this.sessionId || this.deletingSession || this.$refs.deleteDialog.open) return;
+            this.deleteError = '';
+            this.$refs.deleteDialog.showModal();
+        },
+
+        async deleteSession() {
+            if (!this.sessionId || this.deletingSession || !this.$refs.deleteDialog.open) return;
+            this.deletingSession = true;
+            this.deleteError = '';
+            try {
+                // Stop local playback before asking the server to remove the audio.
+                this.getAudioPlayer()?.pause();
+                const response = await fetch(`/api/sessions/${encodeURIComponent(this.sessionId)}`, {
+                    method: 'DELETE',
+                });
+                if (!response.ok) {
+                    const { detail } = await response.json().catch(() => ({}));
+                    throw new Error(detail || `Could not delete this session (HTTP ${response.status}).`);
+                }
+                window.location.replace('/');
+            } catch (error) {
+                this.deleteError = error.message || 'Could not delete this session.';
+            } finally {
+                this.deletingSession = false;
+            }
         },
 
         enrichSpan(span) {
@@ -613,7 +644,7 @@ function sessionDetailApp() {
         },
 
         handleKeydown(event) {
-            if (this.isUserTyping()) return;
+            if (this.$refs.deleteDialog?.open || this.isUserTyping()) return;
 
             if (this.selectedView === 'logs') {
                 if (this.handleLogsKeydown(event)) return;

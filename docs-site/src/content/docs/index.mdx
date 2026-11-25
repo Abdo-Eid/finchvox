@@ -1,0 +1,26 @@
+---
+title: Finchvox Docs
+description: Install Finchvox and replay a LiveKit voice-agent session on your own machine.
+template: splash
+hero:
+  title: Debug voice agents, one call at a time.
+editUrl: false
+prev: false
+next: false
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+export const base = import.meta.env.BASE_URL;
+
+<div data-finchvox-home>
+
+## Pick a starting point
+
+<CardGrid>
+  <LinkCard title="Quickstart" description="Pull the Docker image, point your LiveKit agent at Finchvox, and open your first replay." href={`${base}start/overview/`} />
+  <LinkCard title="Runnable examples" description="Run a complete Python voice agent, use Docker, or record a terminal call." href={`${base}examples/livekit-agent/`} />
+  <LinkCard title="Replay walkthrough" description="Follow a synthetic call from the transcript to the slow step in its trace." href={`${base}start/replay/`} />
+</CardGrid>
+
+</div>

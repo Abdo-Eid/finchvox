@@ -14,5 +14,6 @@ dist/
 build/
 .claude/
 docs/
+docs-site/
 private/
 worker/

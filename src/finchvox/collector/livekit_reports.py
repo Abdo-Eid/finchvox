@@ -6,6 +6,9 @@ from pathlib import Path
 
 from .config import get_session_dir
 
+# LiveKit can export these in a separate trace after the agent session ends.
+_SHUTDOWN_SPANS = ("session_end_upload", "on_session_end", "job_shutdown", "room_disconnect")
+
 
 def _otel_attributes(span: dict) -> dict[str, object]:
     """Decode the small subset of OTLP JSON attributes needed for correlation."""
@@ -54,6 +57,7 @@ def resolve_livekit_trace_id(
     room SID, and room name are also emitted on LiveKit spans. Matching these
     values lets a normal ``on_session_end`` callback attach the report/audio
     without application code manually carrying a trace ID through the session.
+    Exact job matching ignores shutdown-only traces and declines ambiguous matches.
     """
     job_id, room_id, room_name = livekit_report_identity(report)
     if exact_job:
@@ -74,13 +78,17 @@ def resolve_livekit_trace_id(
             continue
         score = 0
         try:
-            with trace_file.open() as handle:
+            with trace_file.open(encoding="utf-8") as handle:
                 for line in handle:
                     if not line.strip():
                         continue
                     try:
                         span = json.loads(line)
                     except json.JSONDecodeError:
+                        continue
+                    if not isinstance(span, dict):
+                        continue
+                    if exact_job and span.get("name") in _SHUTDOWN_SPANS:
                         continue
                     attrs = _otel_attributes(span)
                     span_job_id = attrs.get("job_id") or attrs.get("lk.job_id")
@@ -94,7 +102,7 @@ def resolve_livekit_trace_id(
                         score = max(score, 40)
                     if score >= 100:
                         break
-        except OSError:
+        except (OSError, UnicodeError):
             continue
 
         if score:

@@ -12,6 +12,20 @@
     <script src="/lib/chart.min.js"></script>
 </head>
 <body class="insights-body" x-data="sessionDetailApp()">
+<dialog x-ref="deleteDialog" class="session-delete-dialog" aria-labelledby="delete-session-title"
+        aria-describedby="delete-session-description" @cancel="if (deletingSession) $event.preventDefault()">
+    <h2 id="delete-session-title">Delete this session?</h2>
+    <p id="delete-session-description">
+        This permanently removes the recording, transcript, traces, and logs from Finchvox. It cannot be undone.
+    </p>
+    <p x-show="deleteError" aria-live="polite" class="session-delete-error" x-text="deleteError"></p>
+    <div class="session-delete-actions">
+        <button type="button" class="chrome-button" autofocus :disabled="deletingSession"
+                @click="$refs.deleteDialog.close()">Cancel</button>
+        <button type="button" class="chrome-button chrome-button-danger" :disabled="deletingSession"
+                @click="deleteSession()" x-text="deletingSession ? 'Deleting…' : 'Delete session'"></button>
+    </div>
+</dialog>
 <div class="min-h-screen flex theme-page" :style="`--inspector-width: ${inspectorWidth}px`"
      :class="{ 'inspector-resizing': inspectorResizing }">
     <div class="flex-1 min-w-0 h-screen overflow-y-auto transition-[margin] duration-300"
@@ -39,6 +53,10 @@
                     <a :href="'/api/sessions/' + sessionId + '/download'" download class="chrome-button" title="Download session" aria-label="Download session">
                         <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#download"/></svg>
                     </a>
+                    <button type="button" class="chrome-button chrome-button-danger" title="Delete session" aria-label="Delete session"
+                            aria-haspopup="dialog" @click="openDeleteDialog()" :disabled="deletingSession || !sessionId">
+                        <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#trash"/></svg>
+                    </button>
                     <a href="/settings" class="chrome-button" title="Settings" aria-label="Settings">
                         <svg class="icon" aria-hidden="true"><use href="/images/icons.svg#settings"/></svg>
                     </a>

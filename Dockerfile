@@ -29,6 +29,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Stage 2 runs it, with only the finished environment: no uv, no source tree.
 FROM python:${PYTHON_VERSION}-slim
+LABEL org.opencontainers.image.source="https://github.com/Abdo-Eid/finchvox" \
+      org.opencontainers.image.description="Local session replay for LiveKit Agents" \
+      org.opencontainers.image.licenses="MIT"
 
 # ffmpeg is only needed to compress Pipecat audio chunks into audio.opus.
 # LiveKit uploads finished recordings, so it is left out unless requested.

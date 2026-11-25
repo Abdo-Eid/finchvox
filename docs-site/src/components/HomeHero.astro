@@ -1,0 +1,79 @@
+---
+import { Icon, LinkButton } from '@astrojs/starlight/components';
+import ReplayPreview from './ReplayPreview.astro';
+
+const base = import.meta.env.BASE_URL;
+---
+
+<section class="home-hero">
+  <div class="intro">
+    <p class="eyebrow"><Icon name="seti:audio" size="1.12rem" /> FINCHVOX / DOCUMENTATION</p>
+    <h1 id="_top">Debug voice agents,<br class="desktop-break" /> <span>one call at a time.</span></h1>
+    <p class="lede">Replay a LiveKit session with audio, transcripts, traces, and logs on one timeline. See what happened without leaving your machine.</p>
+    <div class="actions">
+      <LinkButton href={`${base}start/overview/`} icon="right-arrow">Start here</LinkButton>
+      <LinkButton href={`${base}start/replay/#try-a-synthetic-session`} variant="secondary">Explore a replay</LinkButton>
+    </div>
+  </div>
+  <ReplayPreview />
+</section>
+
+<style>
+  .home-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: center;
+    gap: 2.25rem;
+    padding-block: clamp(2rem, 7vw, 5rem) clamp(2.5rem, 6vw, 4.5rem);
+    background: radial-gradient(ellipse at 83% 40%, var(--fx-glow) 0%, transparent 56%);
+  }
+
+  .intro { min-width: 0; }
+
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin: 0 0 1.1rem;
+    color: var(--sl-color-accent-high);
+    font: 650 0.73rem / 1.4 var(--sl-font-mono);
+    letter-spacing: 0.12em;
+  }
+
+  h1 {
+    margin: 0;
+    max-width: 13ch;
+    color: var(--sl-color-white);
+    font-size: clamp(2.55rem, 5vw, 4.4rem);
+    font-weight: 700;
+    letter-spacing: -0.068em;
+    line-height: 1.05;
+    text-wrap: balance;
+  }
+
+  h1 span { color: var(--sl-color-accent-high); }
+  .desktop-break { display: none; }
+
+  .lede {
+    max-width: 41ch;
+    margin: 1.35rem 0 0;
+    color: var(--sl-color-gray-2);
+    font-size: clamp(1rem, 2vw, 1.2rem);
+    line-height: 1.6;
+  }
+
+  .actions { display: flex; gap: 0.7rem; flex-wrap: wrap; margin-top: 1.6rem; }
+
+  .actions :global(a) {
+    border-radius: 0.55rem;
+    padding: 0.6rem 1rem;
+    font-size: 0.9rem;
+    font-weight: 650;
+  }
+
+  @media (min-width: 58rem) {
+    .home-hero { grid-template-columns: 1.04fr 1fr; gap: clamp(1.75rem, 4vw, 4rem); }
+    h1 { max-width: none; text-wrap: initial; }
+    .desktop-break { display: initial; }
+  }
+</style>

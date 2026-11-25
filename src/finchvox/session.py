@@ -17,9 +17,8 @@ from finchvox.collector.config import (
     UNZIPPED_TEXT_DIVISOR,
 )
 
-# The session ID becomes a folder name that from_zip replaces, so it must never
-# be able to resolve to anything but a single child of the sessions dir.
-_SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9_-]+")
+# Import and deletion use the session ID as a single child of the sessions dir.
+SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 # Raised by zipfile for corrupt, encrypted or unsupported archives. Python stops
 # reading an entry at its declared size and then fails its CRC check, so an entry
@@ -458,7 +457,7 @@ class Session:
                 session_id = Session.extract_id_from_zip(zf)
                 if not session_id:
                     return None, "Could not determine session ID from zip structure"
-                if not _SAFE_SESSION_ID.fullmatch(session_id):
+                if not SAFE_SESSION_ID.fullmatch(session_id):
                     return None, "Invalid session ID in zip"
                 if not Session._all_entries_inside_session(zf, session_id):
                     return None, "All zip entries must be inside the session folder"

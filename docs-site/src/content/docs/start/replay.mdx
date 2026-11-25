@@ -1,0 +1,24 @@
+---
+title: Replay your first call
+description: Follow the transcript to a slow tool call using a synthetic session, then try the same steps with your own call.
+---
+
+import ReplayPreview from '../../../components/ReplayPreview.astro';
+
+Open **Sessions** in your local Finchvox dashboard and select the call you just finished. A finished recording gives you a waveform and playback; the trace and logs are useful even when audio wasn't captured.
+
+## Try a synthetic session
+
+The caller asks when a library closes. Select **Question**, **Slow lookup**, and **Reply** to move the playhead and see where the call spent its time. This is an illustration, not the live app; it contains no recorded audio.
+
+<ReplayPreview interactive />
+
+The lookup took **2.4 seconds**. In a real call, the tool span and logs at that time can show whether the delay came from the tool itself or from a retry.
+
+## Follow the same steps on your call
+
+1. Start in **Transcript**. Find a pause, interruption, or unexpected reply. With a recording, play it and use the waveform to seek around that point.
+2. Open **Trace** at the same point. Expand the agent turn and inspect the timed steps: the model, any tool calls, and speech generation.
+3. Check **Logs** for warnings near that time. Use **Metrics** to see the timing and usage values the agent reported.
+
+If nothing appears or the waveform is missing, follow [Troubleshooting](../../guides/troubleshooting/). For another way to capture your next call, try the [terminal recording example](../../examples/terminal-recording/).

@@ -146,6 +146,67 @@ class TestListSessionsEndpoint:
         assert data["totals"] == {"sessions": 1, "livekit": 0, "errors": 0}
 
 
+class TestDeleteSessionEndpoint:
+    def test_deletes_only_the_selected_session_and_all_its_artifacts(self, client, temp_data_dir):
+        span = {"name": "agent_session", "start_time_unix_nano": 1}
+        create_session_with_logs(temp_data_dir, "delete-me", [span], [{"body": "test"}])
+        create_session_with_logs(temp_data_dir, "keep-me", [span], [])
+        target = temp_data_dir / "sessions" / "delete-me"
+        (target / "audio.ogg").write_bytes(b"test")
+        (target / "livekit_report.json").write_text("{}")
+        (target / "audio").mkdir()
+        (target / "audio" / "chunk_0000.wav").write_bytes(b"test")
+
+        result = client.delete("/api/sessions/delete-me")
+
+        assert result.status_code == 204
+        assert not target.exists()
+        assert client.get("/api/sessions/delete-me/trace").status_code == 404
+        assert [s["session_id"] for s in client.get("/api/sessions").json()["sessions"]] == [
+            "keep-me"
+        ]
+
+    def test_missing_session_returns_404(self, client):
+        assert client.delete("/api/sessions/missing").status_code == 404
+
+    def test_refuses_a_path_outside_the_sessions_directory(self, client, temp_data_dir):
+        outside = temp_data_dir / "outside"
+        outside.mkdir()
+        (outside / "trace_outside.jsonl").write_text("{}\n")
+        (temp_data_dir / "sessions").mkdir()
+
+        result = client.delete("/api/sessions/..%5Coutside")
+
+        assert result.status_code == 400
+        assert (outside / "trace_outside.jsonl").exists()
+
+    def test_refuses_a_session_directory_symlink(self, client, temp_data_dir):
+        outside = temp_data_dir / "outside"
+        outside.mkdir()
+        (outside / "trace_linked.jsonl").write_text("{}\n")
+        sessions = temp_data_dir / "sessions"
+        sessions.mkdir()
+        try:
+            (sessions / "linked").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("Directory symlinks are not available")
+
+        assert client.delete("/api/sessions/linked").status_code == 400
+        assert (outside / "trace_linked.jsonl").exists()
+
+    def test_reports_a_locked_session(self, client, temp_data_dir, monkeypatch):
+        create_session_with_logs(temp_data_dir, "in-use", [{"name": "agent_session"}], [])
+
+        def locked(*args, **kwargs):
+            raise PermissionError("in use")
+
+        monkeypatch.setattr(Path, "replace", locked)
+        response = client.delete("/api/sessions/in-use")
+
+        assert response.status_code == 409
+        assert client.get("/api/sessions/in-use/trace").status_code == 200
+
+
 class TestGetLogsEndpoint:
     def test_returns_logs_for_valid_session(self, client, temp_data_dir):
         session_id = "abc123def456"

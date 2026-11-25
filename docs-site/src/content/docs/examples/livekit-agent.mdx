@@ -1,0 +1,54 @@
+---
+title: Run a complete LiveKit agent
+description: Start the included Python voice agent, make a test call, and open the replay in Finchvox.
+---
+
+import { Code } from '@astrojs/starlight/components';
+import agentSource from '../../../../../examples/livekit/agent.py?raw';
+
+Use this example if you don't already have a voice agent. It uses a LiveKit Cloud project for the room and LiveKit Inference for speech recognition, the language model, and the voice. Finchvox runs locally.
+
+## Set up the example
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and Git. Then clone the Finchvox fork:
+
+```sh
+git clone https://github.com/Abdo-Eid/finchvox.git
+cd finchvox/examples/livekit
+uv sync
+```
+
+Create `.env` in `examples/livekit/` with credentials from your own LiveKit Cloud project:
+
+```dotenv title=".env"
+LIVEKIT_URL=wss://<your-project>.livekit.cloud
+LIVEKIT_API_KEY=<your-key>
+LIVEKIT_API_SECRET=<your-secret>
+```
+
+Don't commit or share this file. The project credentials also cover the example's Inference models. Leave `LIVEKIT_OBSERVABILITY_URL` unset: this example uses the [Python integration](../../guides/python-integration/).
+
+## Run it in two terminals
+
+In the first terminal, from `examples/livekit/`:
+
+```sh
+uv run finchvox start --data-dir ../../.finchvox-data
+```
+
+In a second terminal, from the same folder:
+
+```sh
+uv run python -m livekit.agents download-files
+uv run python -m livekit.agents start agent.py --dev
+```
+
+Use your LiveKit client or playground to join a room and talk to the agent. End the call, then open [localhost:3000](http://localhost:3000), select the new session, and check **Transcript** and **Trace**. The waveform appears if LiveKit produced a finished recording. Check the project's session recording setting if you want audio; enabling it can also send session data to LiveKit Cloud.
+
+## Read the source
+
+The snippet below is built from the [actual example file](https://github.com/Abdo-Eid/finchvox/blob/main/examples/livekit/agent.py). `init_livekit()` sends traces and logs; the `on_session_end` callback uploads the final session report and attaches audio when the SDK has a recording.
+
+<Code code={agentSource} lang="python" title="examples/livekit/agent.py" />
+
+Using a self-hosted LiveKit server? Replace the example's `inference.*` models with provider plugins compatible with your deployment. See [Troubleshooting](../../guides/troubleshooting/) if the session doesn't appear.

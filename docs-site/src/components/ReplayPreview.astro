@@ -1,0 +1,171 @@
+---
+interface Props {
+  interactive?: boolean;
+}
+
+const { interactive = false } = Astro.props;
+const moments = [
+  {
+    time: '00:02.4', at: 20, actor: 'Caller', label: 'Question',
+    line: 'What time does the library close?',
+    detail: 'The caller asks a question. The transcript and waveform put it at the same point in the call.',
+  },
+  {
+    time: '00:05.1', at: 42.5, actor: 'Tool', label: 'Slow lookup',
+    line: 'lookup_hours → 2.4 s',
+    detail: 'Most of the delay was spent looking up library hours, not generating speech. Select the tool span in a real replay to inspect its arguments and timing.',
+  },
+  {
+    time: '00:08.0', at: 66.7, actor: 'Agent', label: 'Reply',
+    line: 'The library closes at six today.',
+    detail: 'The agent speaks after the lookup completes. In a real replay, the waveform lets you listen to this turn.',
+  },
+];
+
+const bars = Array.from({ length: 96 }, (_, index) => {
+  const inTurn = (index > 10 && index < 29) || (index > 62 && index < 87);
+  return (inTurn ? 15 : 3) + ((index * 19 + index * index * 7) % (inTurn ? 44 : 9));
+});
+const initial = interactive ? 0 : 1;
+---
+
+<section class="replay-preview" aria-label="Synthetic session timeline" data-replay-preview>
+  <div class="panel-top">
+    <span class="status"><span></span> SESSION REPLAY</span>
+    <span class="badge">Synthetic session</span>
+  </div>
+  <div class="panel-body">
+    <div class="session-title">
+      <strong>Library hours</strong>
+      <time data-clock>{moments[initial].time}</time>
+    </div>
+    <div class="timeline" style={`--playhead: ${moments[initial].at}%`} aria-hidden="true">
+      <div class="waveform">
+        {bars.map((height) => <span style={`height: ${height}px`}></span>)}
+      </div>
+      <div class="track" title="Caller speaks"><span style="--start: 11%; --length: 19%; --track-color: #8accdf"></span></div>
+      <div class="track" title="Tool lookup"><span style="--start: 42.5%; --length: 20%; --track-color: #e8b87e"></span></div>
+      <div class="track" title="Agent replies"><span style="--start: 66.7%; --length: 23%; --track-color: #a9e99a"></span></div>
+    </div>
+    <div class="ticks" aria-hidden="true"><span>00:00</span><span>00:04</span><span>00:08</span><span>00:12</span></div>
+    {interactive && (
+      <div class="moments" role="group" aria-label="Jump to a moment in the call">
+        {moments.map((moment, i) => (
+          <button type="button" aria-pressed={i === initial ? 'true' : 'false'} data-at={moment.at} data-time={moment.time} data-moment={i}>
+            {moment.label}
+          </button>
+        ))}
+      </div>
+    )}
+    <div class="moment-details" aria-live={interactive ? 'polite' : undefined} aria-atomic={interactive ? 'true' : undefined}>
+      {moments.map((moment, i) => (
+        <div data-detail={i} hidden={i !== initial}>
+          <div class="sample"><span>{moment.actor}</span><strong>{moment.line}</strong></div>
+          {interactive && <p>{moment.detail}</p>}
+        </div>
+      ))}
+    </div>
+  </div>
+</section>
+
+<script>
+  for (const preview of document.querySelectorAll('[data-replay-preview]')) {
+    const buttons = preview.querySelectorAll<HTMLButtonElement>('button[data-moment]');
+    const details = preview.querySelectorAll<HTMLElement>('[data-detail]');
+    const timeline = preview.querySelector<HTMLElement>('.timeline');
+    const clock = preview.querySelector('[data-clock]');
+    if (!timeline || !clock) continue;
+
+    for (const button of buttons) {
+      button.addEventListener('click', () => {
+        timeline.style.setProperty('--playhead', `${button.dataset.at}%`);
+        clock.textContent = button.dataset.time ?? '';
+        for (const other of buttons) other.setAttribute('aria-pressed', String(other === button));
+        for (const detail of details) detail.hidden = detail.dataset.detail !== button.dataset.moment;
+      });
+    }
+  }
+</script>
+
+<style>
+  .replay-preview {
+    margin: 0;
+    min-width: 0;
+    overflow: hidden;
+    color: #ecf3eb;
+    background: #151e18;
+    border: 1px solid #374a3b;
+    border-radius: 0.9rem;
+    box-shadow: 0 14px 52px #06140b36;
+  }
+
+  .panel-top,
+  .session-title,
+  .ticks,
+  .sample {
+    display: flex;
+    align-items: center;
+    margin: 0;
+  }
+
+  .panel-top {
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    background: #1b261e;
+    border-bottom: 1px solid #374a3b;
+  }
+
+  .status, .badge, time, .ticks, .sample > span {
+    font: 500 0.69rem / 1.4 var(--sl-font-mono);
+    white-space: nowrap;
+  }
+
+  .status { display: flex; align-items: center; gap: 0.55rem; color: #b3e6af; letter-spacing: 0.06em; }
+  .status span { width: 0.44rem; height: 0.44rem; border-radius: 50%; background: #a9e99a; }
+  .badge { color: #c2d1c3; padding: 0.2rem 0.42rem; border: 1px solid #455748; border-radius: 0.35rem; }
+  .panel-body { padding: clamp(0.75rem, 2.8vw, 1.3rem); margin: 0; }
+  .session-title { justify-content: space-between; gap: 0.4rem; }
+  time { color: #c0efb8; }
+
+  .timeline {
+    position: relative;
+    margin: 0.8rem 0 0;
+    padding-block: 0.15rem 0.4rem;
+    background: repeating-linear-gradient(90deg, #35443a 0 1px, transparent 1px 33.333%);
+    border-right: 1px solid #35443a;
+  }
+  .timeline::after {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 var(--playhead);
+    width: 2px;
+    background: #dcffd6;
+    box-shadow: 0 0 8px #b2f3a36b;
+  }
+
+  .waveform { display: flex; align-items: center; gap: 2px; height: 65px; margin: 0; overflow: hidden; }
+  .waveform span { flex: 1 0 1px; border-radius: 3px; background: #8ac993; margin: 0; }
+  .track { position: relative; height: 0.45rem; margin: 0.35rem 0 0; }
+  .track span { position: absolute; inset: 0 auto 0 var(--start); width: var(--length); border-radius: 3px; background: var(--track-color); }
+  .ticks { justify-content: space-between; color: #b4c4b8; margin-top: 0.45rem; }
+
+  .moments { display: flex; gap: 0.45rem; flex-wrap: wrap; margin: 0.85rem 0 0; }
+  .moments button {
+    margin: 0;
+    font: inherit;
+    font-size: 0.84rem;
+    padding: 0.25rem 0.65rem;
+    color: #e2eee3;
+    background: #1b291f;
+    border: 1px solid #546c59;
+    border-radius: 0.35rem;
+    cursor: pointer;
+  }
+  .moments button:hover, .moments button[aria-pressed='true'] { background: #c0efb8; color: #152818; border-color: #c0efb8; }
+  .moments button:focus-visible { outline: 2px solid #c0efb8; outline-offset: 2px; }
+  .moment-details { margin: 0.85rem 0 0; padding: 0.7rem; background: #1b281f; border-radius: 0.45rem; }
+  .sample { align-items: baseline; gap: 0.55rem; font-size: 0.88rem; }
+  .sample > span { color: #c0efb8; text-transform: uppercase; }
+  .moment-details p { margin: 0.45rem 0 0; font-size: 0.9rem; color: #c6d5c7; }
+</style>

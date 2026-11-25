@@ -1,0 +1,70 @@
+:root {
+  --sl-font: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --sl-font-mono: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  --sl-content-width: 46rem;
+  --sl-sidebar-width: 17rem;
+  --sl-color-gray-1: #eaefe9;
+  --sl-color-gray-2: #c8d0c7;
+  --sl-color-gray-3: #a3afa3;
+  --sl-color-gray-4: #6f7d70;
+  --sl-color-gray-5: #323c34;
+  --sl-color-gray-6: #1b241e;
+  --sl-color-black: #101512;
+  --sl-color-accent-low: #202e23;
+  --sl-color-accent: #8fdb85;
+  --sl-color-accent-high: #c0f4b3;
+  --sl-color-text-invert: #132217;
+  --fx-glow: #2d542c6b;
+}
+
+:root[data-theme='light'] {
+  --sl-color-gray-1: #223326;
+  --sl-color-gray-2: #34473a;
+  --sl-color-gray-3: #516659;
+  --sl-color-gray-4: #68796d;
+  --sl-color-gray-5: #bccabf;
+  --sl-color-gray-6: #e8f0e8;
+  --sl-color-gray-7: #f2f6f2;
+  --sl-color-white: #142418;
+  --sl-color-black: #f9fbf8;
+  --sl-color-accent-low: #e1f2dd;
+  --sl-color-accent: #286033;
+  --sl-color-accent-high: #1d4d29;
+  --sl-color-text-invert: #ffffff;
+  --fx-glow: #cbe9c8a3;
+}
+
+.site-title {
+  font-size: 1.05rem;
+  letter-spacing: -0.035em;
+}
+
+.site-title img {
+  width: 1.8rem;
+  height: 1.8rem;
+}
+
+.content-panel h1 {
+  letter-spacing: -0.04em;
+}
+
+.sidebar-content summary .group-label {
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sidebar-content a {
+  border-radius: 0.45rem;
+}
+
+.sidebar-content [aria-current='page'] {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent-high);
+}
+
+@media (min-width: 58rem) {
+  [data-finchvox-home] .card-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}

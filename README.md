@@ -6,6 +6,8 @@ This fork makes the LiveKit Agents integration first-class while retaining the o
 
 > Independent project: this fork is not affiliated with or endorsed by LiveKit. It does not ship LiveKit branding or proprietary assets. Finchvox is MIT licensed; see [`LICENSE`](LICENSE).
 
+The [documentation site source](docs-site/) includes a step-by-step quickstart, runnable examples, and a synthetic replay walkthrough.
+
 ## What Finchvox is, and what it is not
 
 Finchvox is an observability and tracing tool for one call at a time. It answers "what happened in this call, and why?" by replaying the call's audio, transcript, traces, logs and metrics on one timeline.
@@ -45,6 +47,7 @@ Finchvox also does not watch LiveKit server traffic. The agent sends Finchvox it
 - LiveKit voice metrics when the SDK emits them: end-to-end latency, transcription and end-of-turn delays, queue wait, LLM time to first token, TTS time to first byte, blocked event loops, job dispatch time and per-model usage.
 - Automatic matching of a `SessionReport` to its trace by LiveKit job or room ID.
 - Playback of a finished recording in WAV, MP3, OGG, FLAC, OPUS, WebM or M4A.
+- Download or permanently delete a saved replay from its session page.
 - A Docker setup that keeps the ports on your machine and sessions in a volume.
 - A Settings page (gear icon) for the theme (Insights or the original Classic colours), text size, time format and how sessions open. Preferences are kept in your browser.
 - A layout that works from phone to desktop width, with all UI assets served locally (no CDN).
@@ -75,7 +78,16 @@ OpenTelemetry provides the trace/latency structure. A `SessionReport` improves t
 
 ## Quick start: LiveKit Agents
 
-### 1. Install
+Already have a room-based LiveKit agent? Start Finchvox with Docker:
+
+```sh
+docker pull ghcr.io/abdo-eid/finchvox:main
+docker run -d --name finchvox -p 127.0.0.1:3000:3000 -v finchvox-data:/data ghcr.io/abdo-eid/finchvox:main
+```
+
+Then [point the agent's uploads at Finchvox](#3-connect-a-room-based-agent-without-adding-code). If the image isn't available yet, [build it with Docker Compose](docs/DOCKER.md#start-and-stop) or install the fork from Git below.
+
+### 1. Install without Docker
 
 Requires Python 3.12–3.14. The supported voice SDK baselines are LiveKit Agents 1.8.9+ and Pipecat 1.14+.
 
@@ -143,7 +155,7 @@ docker compose up -d --build
 
 See [`docs/DOCKER.md`](docs/DOCKER.md) for settings, backups and Windows notes. On Windows, check that `http://localhost:3000/collector/health` answers from Finchvox: a dev server on port 3000 can take `localhost` first.
 
-### 3. Connect the agent without adding code
+### 3. Connect a room-based agent without adding code
 
 Set this in the agent's `.env`, then restart the agent:
 
@@ -155,9 +167,9 @@ Keep session recording and traces enabled. On self-hosted LiveKit, set `record=T
 
 This **redirects** LiveKit's observability uploads: its Cloud dashboard does not receive a second copy. It does not change where the call's media or models run. For recording options, troubleshooting, and the SDK compatibility caveat, see [the zero-code setup guide](docs/LIVEKIT_LOCAL_SETUP.md#12-no-code-hookup-with-livekit_observability_url).
 
-### Alternative: Keep sending observability to LiveKit Cloud
+### Alternative: Terminal mic replay or a second copy in LiveKit Cloud
 
-If you want each call in **both** Finchvox and LiveKit Cloud, leave `LIVEKIT_OBSERVABILITY_URL` unset and use the explicit Python integration. Install Finchvox into the agent's environment, then add:
+Use the explicit Python integration to capture calls from `lk agent console --record` without a LiveKit room server, or to keep room calls in **both** Finchvox and LiveKit Cloud. Leave `LIVEKIT_OBSERVABILITY_URL` unset. Install Finchvox into the agent's environment, then add:
 
 ```python
 import finchvox
@@ -170,7 +182,7 @@ async def entrypoint(ctx):
     ...
 ```
 
-The first line sends traces and logs to Finchvox while the call runs. The second sends LiveKit's session report and recording when it ends. It also flushes everything at the right moments, and only logs a problem, never raising it, so Finchvox cannot break your agent's shutdown. LiveKit Cloud keeps receiving its own copy.
+The first line sends traces and logs to Finchvox while the call runs. The second sends LiveKit's session report and recording when it ends. It also flushes everything at the right moments, and only logs a problem, never raising it, so Finchvox cannot break your agent's shutdown. For room calls, LiveKit Cloud can still receive its own copy. See [terminal voice calls](docs/LIVEKIT_LOCAL_SETUP.md#terminal-voice-calls-without-a-livekit-server) for the tested microphone workflow.
 
 If you already have an `on_session_end`, call Finchvox from it instead:
 

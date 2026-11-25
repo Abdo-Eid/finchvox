@@ -85,7 +85,7 @@ class TestConfiguration:
     def test_build_context_leaves_out_unrelated_folders(self):
         ignored = (ROOT / ".dockerignore").read_text().split()
 
-        for entry in ("worker/", "docs/", "**/.env", "**/.venv/"):
+        for entry in ("worker/", "docs/", "docs-site/", "**/.env", "**/.venv/"):
             assert entry in ignored
 
 
@@ -125,7 +125,10 @@ class TestContainerSmoke:
                 check=check, timeout=timeout,
             )
 
-        compose("up", "-d", "--build")
+        if os.environ.get("FINCHVOX_DOCKER_PREBUILT") == "1":
+            compose("up", "-d", "--no-build", "--pull", "never")
+        else:
+            compose("up", "-d", "--build")
         try:
             yield compose, f"http://127.0.0.1:{http_port}", grpc_port
         finally:

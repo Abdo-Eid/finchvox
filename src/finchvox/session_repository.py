@@ -1,10 +1,11 @@
 import math
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
 
-from finchvox.session import MALFORMED_SESSION_ERRORS, Session
+from finchvox.session import MALFORMED_SESSION_ERRORS, SAFE_SESSION_ID, Session
 
 DEFAULT_PAGE_SIZE = 50
 
@@ -41,6 +42,20 @@ class SessionRepository:
     def __init__(self, sessions_base_dir: Path, page_size: int = DEFAULT_PAGE_SIZE):
         self.sessions_base_dir = sessions_base_dir
         self.page_size = page_size
+
+    def delete(self, session_id: str) -> None:
+        if not SAFE_SESSION_ID.fullmatch(session_id):
+            raise ValueError("Invalid session ID")
+        session_dir = self.sessions_base_dir / session_id
+        if session_dir.is_symlink() or session_dir.is_junction():
+            raise ValueError("Cannot delete a linked session folder")
+        if not (session_dir / f"trace_{session_id}.jsonl").is_file():
+            raise FileNotFoundError(session_id)
+
+        # Move the whole folder out of the live list before removing any files.
+        # On Windows an open file can block the move; leave the session intact.
+        with tempfile.TemporaryDirectory(dir=self.sessions_base_dir, prefix=".delete-") as staging:
+            session_dir.replace(Path(staging) / session_id)
 
     def _load_all_sessions(self) -> list[dict]:
         if not self.sessions_base_dir.exists():

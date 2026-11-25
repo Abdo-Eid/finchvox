@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from loguru import logger
 
 from finchvox import telemetry
@@ -376,6 +376,26 @@ def register_ui_routes(
     @app.get("/api/sessions")
     async def list_sessions(page: int = 1) -> JSONResponse:
         return await _handle_list_sessions(sessions_base_dir, max_upload_bytes, page)
+
+    @app.delete("/api/sessions/{session_id}", status_code=204, response_class=Response)
+    def delete_session(session_id: str) -> None:
+        try:
+            SessionRepository(sessions_base_dir).delete(session_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail="Session not found") from e
+        except PermissionError as e:
+            logger.warning(f"Session {session_id} could not be deleted: {e}")
+            raise HTTPException(
+                status_code=409,
+                detail="Could not delete this session. Close any playback or download and try again.",
+            ) from e
+        except OSError as e:
+            logger.exception(f"Could not delete session {session_id}")
+            raise HTTPException(
+                status_code=500, detail="Could not delete this session. See the server log."
+            ) from e
 
     @app.get("/api/sessions/{session_id}/trace")
     async def get_session_trace(session_id: str) -> JSONResponse:
